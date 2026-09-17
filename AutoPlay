@@ -25,7 +25,7 @@ local AutoPlay = {}
 --------------------------------------------------
 
 AutoPlay.Name = "AutoPlay"
-AutoPlay.Version = "v7"
+AutoPlay.Version = "v9"
 
 print(
 	("[FleeTheFacility] %s %s loaded"):format(
@@ -109,6 +109,10 @@ AutoPlay.Config = {
 
 	BeastResumeDistance = 22,
 
+	-- Temporary holding position while the Beast is too close.
+	-- Kept far above the saved spot to avoid FallenPartsDestroyHeight.
+	BeastHoldDistance = 10000,
+
 	HideDepth = 18,
 
 	HideTweenTime = 0.3,
@@ -159,6 +163,86 @@ AutoPlay._gameActiveAddedConnection = nil
 AutoPlay._gameStatusConnection = nil
 
 AutoPlay._gameStatusAddedConnection = nil
+
+--------------------------------------------------
+-- GAME RUN STATE
+--------------------------------------------------
+
+function AutoPlay:_PauseForInactiveGame()
+	if not self.Config.Enabled then
+		return
+	end
+
+	--------------------------------------------------
+	-- INVALIDATE ANY CURRENT AUTOPLAY RUN WITHOUT
+	-- TURNING THE AUTOPLAY TOGGLE OFF.
+	--------------------------------------------------
+
+	self._runToken += 1
+
+	self:CancelTravel()
+
+	self:LeaveTrigger()
+
+	self:RestoreSafeSpot()
+
+	self:_SetStatus(
+		"Waiting for game"
+	)
+
+	self:_SetObjective(
+		"None"
+	)
+
+	self:_SetProgress(
+		0
+	)
+end
+
+function AutoPlay:_StartForActiveGame()
+	if not self.Config.Enabled then
+		return
+	end
+
+	if not self:IsGameMarkedActive() then
+		self:_SetStatus(
+			"Waiting for game"
+		)
+
+		return
+	end
+
+	if self:IsBeastLeftGameOver() then
+		self:SetEnabled(
+			false
+		)
+
+		self:_SetStatus(
+			"Disabled - beast left"
+		)
+
+		return
+	end
+
+	--------------------------------------------------
+	-- NEW TOKEN GUARANTEES ONLY THIS RUN CONTINUES.
+	--------------------------------------------------
+
+	self._runToken += 1
+
+	local Token =
+		self._runToken
+
+	self:CaptureSafeSpot()
+
+	task.spawn(
+		function()
+			self:_Run(
+				Token
+			)
+		end
+	)
+end
 
 --------------------------------------------------
 -- GAME ACTIVE
@@ -219,23 +303,21 @@ function AutoPlay:_BindGameActiveFlag()
 						"Value"
 					):Connect(
 						function()
+							if not self.Config.Enabled then
+								return
+							end
+
 							--------------------------------------------------
-							-- LIVE GAME STATE CHANGE
+							-- LIVE BOOLVALUE CHANGE
 							--
-							-- TRUE  = GAME ACTIVE, AUTOPLAY MAY RUN
-							-- FALSE = GAME INACTIVE, DISABLE IMMEDIATELY
+							-- FALSE = STAY ARMED / WAIT
+							-- TRUE  = START AUTOPLAY IMMEDIATELY
 							--------------------------------------------------
 
-							if not self:IsGameMarkedActive()
-								and self.Config.Enabled
-							then
-								self:SetEnabled(
-									false
-								)
-
-								self:_SetStatus(
-									"Disabled - game inactive"
-								)
+							if self:IsGameMarkedActive() then
+								self:_StartForActiveGame()
+							else
+								self:_PauseForInactiveGame()
 							end
 						end
 					)
@@ -247,16 +329,17 @@ function AutoPlay:_BindGameActiveFlag()
 				Connection
 		end
 
-		if not self:IsGameMarkedActive()
-			and self.Config.Enabled
-		then
-			self:SetEnabled(
-				false
-			)
+		--------------------------------------------------
+		-- IF THE FLAG IS REBOUND WHILE AUTOPLAY IS ON,
+		-- SYNC TO ITS CURRENT VALUE.
+		--------------------------------------------------
 
-			self:_SetStatus(
-				"Disabled - game inactive"
-			)
+		if self.Config.Enabled then
+			if self:IsGameMarkedActive() then
+				self:_StartForActiveGame()
+			else
+				self:_PauseForInactiveGame()
+			end
 		end
 	end
 
@@ -1966,16 +2049,68 @@ function AutoPlay:HideFromBeast(
 
 	self:LeaveTrigger()
 
+	--------------------------------------------------
+	-- SAVE THE EXACT SPOT WE WERE AT BEFORE HIDING.
+	--------------------------------------------------
+
 	self:CaptureSafeSpot()
 
 	local ReturnCFrame =
 		Root.CFrame
+
+	local ReturnPosition =
+		ReturnCFrame.Position
 
 	local OriginalAnchored =
 		Root.Anchored
 
 	local OriginalAutoRotate =
 		Humanoid.AutoRotate
+
+	--------------------------------------------------
+	-- FAR-AWAY HOLDING POSITION
+	--
+	-- DO NOT USE THE CURRENT PLAYER POSITION FOR
+	-- BEAST DISTANCE AFTER TELEPORTING. THAT WOULD
+	-- INSTANTLY LOOK "SAFE" BECAUSE WE ARE FAR AWAY.
+	--------------------------------------------------
+
+	local HoldingCFrame =
+		ReturnCFrame
+		+ Vector3.new(
+			0,
+			self.Config.BeastHoldDistance,
+			0
+		)
+
+	local function GetBeastDistanceFromReturnSpot()
+		local Beast =
+			self:GetBeast()
+
+		if not Beast
+			or not Beast.Character
+		then
+			return math.huge
+		end
+
+		local BeastRoot =
+			Beast.Character:FindFirstChild(
+				"HumanoidRootPart"
+			)
+
+		if not BeastRoot then
+			return math.huge
+		end
+
+		return (
+			BeastRoot.Position
+			- ReturnPosition
+		).Magnitude
+	end
+
+	--------------------------------------------------
+	-- TELEPORT FAR AWAY AND HOLD THERE.
+	--------------------------------------------------
 
 	Root.Anchored =
 		true
@@ -1989,41 +2124,41 @@ function AutoPlay:HideFromBeast(
 	Root.AssemblyAngularVelocity =
 		Vector3.zero
 
+	Root.CFrame =
+		HoldingCFrame
+
 	self:_SetStatus(
-		"Beast nearby - hiding"
+		"Beast nearby - holding"
 	)
 
-	local HiddenCFrame =
-		ReturnCFrame
-		+ Vector3.new(
-			0,
-			-self.Config.HideDepth,
-			0
-		)
-
-	local Down =
-		TweenService:Create(
-			Root,
-			TweenInfo.new(
-				self.Config.HideTweenTime,
-				Enum.EasingStyle.Quad,
-				Enum.EasingDirection.Out
-			),
-			{
-				CFrame =
-					HiddenCFrame,
-			}
-		)
-
-	Down:Play()
-	Down.Completed:Wait()
+	--------------------------------------------------
+	-- STAY ANCHORED FAR AWAY UNTIL THE BEAST HAS
+	-- ACTUALLY LEFT THE RESUME RANGE OF OUR SAVED
+	-- ORIGINAL POSITION.
+	--------------------------------------------------
 
 	while self.Config.Enabled
 		and Token
 			== self._runToken
-		and self:GetBeastDistance()
+		and GetBeastDistanceFromReturnSpot()
 			< self.Config.BeastResumeDistance
 	do
+		if not Root.Parent then
+			return false
+		end
+
+		Root.Anchored =
+			true
+
+		Root.AssemblyLinearVelocity =
+			Vector3.zero
+
+		Root.AssemblyAngularVelocity =
+			Vector3.zero
+
+		Root.CFrame =
+			HoldingCFrame
+
 		task.wait(
 			0.1
 		)
@@ -2033,48 +2168,19 @@ function AutoPlay:HideFromBeast(
 		return false
 	end
 
-	if not self.Config.Enabled
-		or Token
-			~= self._runToken
-	then
-		Root.CFrame =
-			ReturnCFrame
+	--------------------------------------------------
+	-- ALWAYS RESTORE THE EXACT SAVED SPOT BEFORE
+	-- RELEASING ANCHOR STATE.
+	--------------------------------------------------
 
-		Root.AssemblyLinearVelocity =
-			Vector3.zero
+	Root.CFrame =
+		ReturnCFrame
 
-		Root.AssemblyAngularVelocity =
-			Vector3.zero
+	Root.AssemblyLinearVelocity =
+		Vector3.zero
 
-		Root.Anchored =
-			OriginalAnchored
-
-		Humanoid.AutoRotate =
-			OriginalAutoRotate
-
-		return false
-	end
-
-	self:_SetStatus(
-		"Returning"
-	)
-
-	local Up =
-		TweenService:Create(
-			Root,
-			TweenInfo.new(
-				self.Config.HideTweenTime,
-				Enum.EasingStyle.Quad,
-				Enum.EasingDirection.Out
-			),
-			{
-				CFrame =
-					ReturnCFrame,
-			}
-		)
-
-	Up:Play()
-	Up.Completed:Wait()
+	Root.AssemblyAngularVelocity =
+		Vector3.zero
 
 	Root.Anchored =
 		OriginalAnchored
@@ -2082,12 +2188,24 @@ function AutoPlay:HideFromBeast(
 	Humanoid.AutoRotate =
 		OriginalAutoRotate
 
+	if not self.Config.Enabled
+		or Token
+			~= self._runToken
+	then
+		return false
+	end
+
+	self:_SetStatus(
+		"Returning"
+	)
+
 	self:CaptureSafeSpot()
 
 	self:LeaveTrigger()
 
 	return true
 end
+
 
 --------------------------------------------------
 -- HACK COMPUTER
@@ -2831,13 +2949,7 @@ function AutoPlay:_Run(
 		--------------------------------------------------
 
 		if not self:IsGameMarkedActive() then
-			self:SetEnabled(
-				false
-			)
-
-			self:_SetStatus(
-				"Disabled - game inactive"
-			)
+			self:_PauseForInactiveGame()
 
 			break
 		end
@@ -3003,38 +3115,8 @@ function AutoPlay:SetEnabled(
 	if Enabled
 		and self:IsBeastLeftGameOver()
 	then
-		if self.Config.Enabled then
-			self:SetEnabled(
-				false
-			)
-		end
-
 		self:_SetStatus(
 			"Disabled - beast left"
-		)
-
-		self:_SetObjective(
-			"None"
-		)
-
-		self:_SetProgress(
-			0
-		)
-
-		return
-	end
-
-	if Enabled
-		and not self:IsGameMarkedActive()
-	then
-		if self.Config.Enabled then
-			self:SetEnabled(
-				false
-			)
-		end
-
-		self:_SetStatus(
-			"Disabled - game inactive"
 		)
 
 		self:_SetObjective(
@@ -3057,10 +3139,11 @@ function AutoPlay:SetEnabled(
 	self.Config.Enabled =
 		Enabled
 
-	self._runToken += 1
+	--------------------------------------------------
+	-- INVALIDATE THE PREVIOUS RUN FIRST.
+	--------------------------------------------------
 
-	local Token =
-		self._runToken
+	self._runToken += 1
 
 	if not Enabled then
 		self:CancelTravel()
@@ -3100,13 +3183,29 @@ function AutoPlay:SetEnabled(
 		)
 	)
 
-	task.spawn(
-		function()
-			self:_Run(
-				Token
-			)
-		end
-	)
+	--------------------------------------------------
+	-- IF THE ROUND IS NOT ACTIVE YET, LEAVE AUTOPLAY
+	-- ARMED. THE ISGAMEACTIVE LISTENER WILL START IT
+	-- AS SOON AS THE BOOLVALUE CHANGES TO TRUE.
+	--------------------------------------------------
+
+	if not self:IsGameMarkedActive() then
+		self:_SetStatus(
+			"Waiting for game"
+		)
+
+		self:_SetObjective(
+			"None"
+		)
+
+		self:_SetProgress(
+			0
+		)
+
+		return
+	end
+
+	self:_StartForActiveGame()
 end
 
 --------------------------------------------------
