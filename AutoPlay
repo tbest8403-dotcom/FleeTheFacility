@@ -25,7 +25,7 @@ local AutoPlay = {}
 --------------------------------------------------
 
 AutoPlay.Name = "AutoPlay"
-AutoPlay.Version = "v14"
+AutoPlay.Version = "v15"
 
 print(
 	("[FleeTheFacility] %s %s loaded"):format(
@@ -85,10 +85,6 @@ AutoPlay.Config = {
 	-- The game's success window is Goal -> Goal + 90.
 	-- Aim near its center.
 	SkillCheckTargetOffset = 45,
-
-	-- Keep ActionInput true long enough for the game's
-	-- RenderStepped loop to detect the successful press.
-	SkillCheckPressTime = 0.12,
 
 	--------------------------------------------------
 	-- HACK RETRY
@@ -1931,20 +1927,11 @@ function AutoPlay:HandleSkillCheck(
 		true
 
 	--------------------------------------------------
-	-- IMPORTANT:
+	-- DO NOT CHANGE ACTIONINPUT HERE.
 	--
-	-- THE GAME'S CLIENT MINIGAME ADVANCES ITS PIN
-	-- WHILE ACTIONINPUT == FALSE.
-	--
-	-- KEEP IT FALSE UNTIL WE REACH THE SUCCESS
-	-- WINDOW. OTHERWISE THE CLIENT CAN IMMEDIATELY
-	-- JUDGE THE MINIGAME AND SEND FALSE.
+	-- AUTOPLAY MUST KEEP THE EXISTING HACK ACTION
+	-- HELD WHILE THE SKILL CHECK IS BEING TIMED.
 	--------------------------------------------------
-
-	self:SetStatValue(
-		"ActionInput",
-		false
-	)
 
 	task.spawn(
 		function()
@@ -2083,22 +2070,16 @@ function AutoPlay:HandleSkillCheck(
 			end
 
 			--------------------------------------------------
-			-- PRESS INSIDE THE SUCCESS WINDOW.
+			-- SUBMIT SUCCESS INSIDE THE SUCCESS WINDOW.
 			--
-			-- ACTIONINPUT TRUE MAKES THE GAME'S OWN CLIENT
-			-- MINIGAME STOP AND JUDGE THIS PIN POSITION.
-			-- WE ALSO SEND THE EXISTING SUCCESS REMOTE.
+			-- IMPORTANT: DO NOT TOUCH ACTIONINPUT.
+			-- THE EXISTING HACK ACTION STAYS HELD.
 			--------------------------------------------------
 
 			if PinRotation >= Goal
 				and PinRotation
 					<= Goal + 90
 			then
-				self:SetStatValue(
-					"ActionInput",
-					true
-				)
-
 				pcall(
 					function()
 						RemoteEvent:FireServer(
@@ -2107,34 +2088,6 @@ function AutoPlay:HandleSkillCheck(
 						)
 					end
 				)
-
-				local PressStarted =
-					os.clock()
-
-				while self.Config.Enabled
-					and Token
-						== self._runToken
-					and Generation
-						== self._skillCheckGeneration
-					and os.clock()
-						- PressStarted
-						< self.Config.SkillCheckPressTime
-				do
-					RunService.Heartbeat:Wait()
-				end
-
-				--------------------------------------------------
-				-- RELEASE LOCALLY FOR THE NEXT SKILL CHECK.
-				--------------------------------------------------
-
-				if Generation
-					== self._skillCheckGeneration
-				then
-					self:SetStatValue(
-						"ActionInput",
-						false
-					)
-				end
 			end
 
 			Finish()
