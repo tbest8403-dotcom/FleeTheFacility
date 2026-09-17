@@ -25,7 +25,7 @@ local AutoPlay = {}
 --------------------------------------------------
 
 AutoPlay.Name = "AutoPlay"
-AutoPlay.Version = "v11"
+AutoPlay.Version = "v14"
 
 print(
 	("[FleeTheFacility] %s %s loaded"):format(
@@ -74,6 +74,21 @@ AutoPlay.Config = {
 	TriggerSettleTime = 0.1,
 
 	ActionSettleTime = 0.1,
+
+	--------------------------------------------------
+	-- SKILL CHECK
+	--------------------------------------------------
+
+	-- Matches the game's own minigame startup delay.
+	SkillCheckInitialDelay = 0.4,
+
+	-- The game's success window is Goal -> Goal + 90.
+	-- Aim near its center.
+	SkillCheckTargetOffset = 45,
+
+	-- Keep ActionInput true long enough for the game's
+	-- RenderStepped loop to detect the successful press.
+	SkillCheckPressTime = 0.12,
 
 	--------------------------------------------------
 	-- HACK RETRY
@@ -142,6 +157,14 @@ AutoPlay._isHiding = false
 
 AutoPlay._hideHoldConnection = nil
 
+AutoPlay._beastReturnCharacter = nil
+
+AutoPlay._beastReturnCFrame = nil
+
+AutoPlay._beastReturnAnchored = nil
+
+AutoPlay._beastReturnAutoRotate = nil
+
 AutoPlay._statusLabel = nil
 
 AutoPlay._objectiveLabel = nil
@@ -151,6 +174,10 @@ AutoPlay._progressFill = nil
 AutoPlay._progressLabel = nil
 
 AutoPlay._lastSkillGoal = nil
+
+AutoPlay._skillCheckGeneration = 0
+
+AutoPlay._skillCheckRunning = false
 
 AutoPlay._safeCharacter = nil
 
@@ -208,7 +235,13 @@ function AutoPlay:_ForceResetForHammer(
 
 	self._runToken += 1
 
-	self:StopBeastHold()
+	self:StopBeastHold(
+		true
+	)
+
+	self:CaptureSafeSpot()
+
+	self:ClearBeastReturnSpot()
 
 	self:CancelTravel()
 
@@ -392,7 +425,13 @@ function AutoPlay:_PauseForInactiveGame()
 
 	self._runToken += 1
 
-	self:StopBeastHold()
+	self:StopBeastHold(
+		true
+	)
+
+	self:CaptureSafeSpot()
+
+	self:ClearBeastReturnSpot()
 
 	self:CancelTravel()
 
@@ -1146,7 +1185,9 @@ end
 -- BEAST HOLD CONNECTION
 --------------------------------------------------
 
-function AutoPlay:StopBeastHold()
+function AutoPlay:StopBeastHold(
+	RestorePosition
+)
 	self._isHiding =
 		false
 
@@ -1156,6 +1197,74 @@ function AutoPlay:StopBeastHold()
 		self._hideHoldConnection =
 			nil
 	end
+
+	if RestorePosition ~= true then
+		return
+	end
+
+	local Character =
+		self:GetCharacter()
+
+	local Root =
+		self:GetRoot()
+
+	local Humanoid =
+		self:GetHumanoid()
+
+	if not Character
+		or not Root
+		or not Humanoid
+	then
+		return
+	end
+
+	if self._beastReturnCharacter
+			~= Character
+		or not self._beastReturnCFrame
+	then
+		return
+	end
+
+	--------------------------------------------------
+	-- RESTORE THE EXACT POSITION FROM THE MOMENT
+	-- BEAST HIDING STARTED, NOT AUTOPLAY'S OLDER
+	-- GENERAL SAFE POSITION.
+	--------------------------------------------------
+
+	Root.CFrame =
+		self._beastReturnCFrame
+
+	Root.AssemblyLinearVelocity =
+		Vector3.zero
+
+	Root.AssemblyAngularVelocity =
+		Vector3.zero
+
+	Root.Anchored =
+		self._beastReturnAnchored
+			== true
+
+	if self._beastReturnAutoRotate == nil then
+		Humanoid.AutoRotate =
+			true
+	else
+		Humanoid.AutoRotate =
+			self._beastReturnAutoRotate
+	end
+end
+
+function AutoPlay:ClearBeastReturnSpot()
+	self._beastReturnCharacter =
+		nil
+
+	self._beastReturnCFrame =
+		nil
+
+	self._beastReturnAnchored =
+		nil
+
+	self._beastReturnAutoRotate =
+		nil
 end
 
 --------------------------------------------------
@@ -1608,6 +1717,11 @@ function AutoPlay:LeaveTrigger()
 
 	self._lastSkillGoal =
 		nil
+
+	self._skillCheckGeneration += 1
+
+	self._skillCheckRunning =
+		false
 end
 
 --------------------------------------------------
@@ -1770,7 +1884,9 @@ end
 -- SKILL CHECK
 --------------------------------------------------
 
-function AutoPlay:HandleSkillCheck()
+function AutoPlay:HandleSkillCheck(
+	Token
+)
 	local Goal =
 		tonumber(
 			self:GetStatValue(
@@ -1783,8 +1899,19 @@ function AutoPlay:HandleSkillCheck()
 		self._lastSkillGoal =
 			nil
 
+		if self._skillCheckRunning then
+			self._skillCheckGeneration += 1
+
+			self._skillCheckRunning =
+				false
+		end
+
 		return
 	end
+
+	--------------------------------------------------
+	-- ONLY HANDLE EACH GOAL ONCE.
+	--------------------------------------------------
 
 	if self._lastSkillGoal
 		== Goal
@@ -1795,15 +1922,226 @@ function AutoPlay:HandleSkillCheck()
 	self._lastSkillGoal =
 		Goal
 
-	pcall(
+	self._skillCheckGeneration += 1
+
+	local Generation =
+		self._skillCheckGeneration
+
+	self._skillCheckRunning =
+		true
+
+	--------------------------------------------------
+	-- IMPORTANT:
+	--
+	-- THE GAME'S CLIENT MINIGAME ADVANCES ITS PIN
+	-- WHILE ACTIONINPUT == FALSE.
+	--
+	-- KEEP IT FALSE UNTIL WE REACH THE SUCCESS
+	-- WINDOW. OTHERWISE THE CLIENT CAN IMMEDIATELY
+	-- JUDGE THE MINIGAME AND SEND FALSE.
+	--------------------------------------------------
+
+	self:SetStatValue(
+		"ActionInput",
+		false
+	)
+
+	task.spawn(
 		function()
-			RemoteEvent:FireServer(
-				"SetPlayerMinigameResult",
-				true
-			)
+			local function IsStillValid()
+				if not self.Config.Enabled
+					or Token
+						~= self._runToken
+					or Generation
+						~= self._skillCheckGeneration
+				then
+					return false
+				end
+
+				if self:GetStatValue(
+					"OnTrigger"
+				) == false
+				then
+					return false
+				end
+
+				local CurrentGoal =
+					tonumber(
+						self:GetStatValue(
+							"TimingGoalPosition"
+						)
+					)
+					or 0
+
+				return CurrentGoal > 0
+					and math.abs(
+						CurrentGoal
+							- Goal
+					) < 0.001
+			end
+
+			local function Finish()
+				if Generation
+					== self._skillCheckGeneration
+				then
+					self._skillCheckRunning =
+						false
+				end
+			end
+
+			--------------------------------------------------
+			-- MATCH THE GAME'S 0.4 SECOND INITIAL WAIT.
+			--------------------------------------------------
+
+			local DelayElapsed =
+				0
+
+			while DelayElapsed
+				< self.Config.SkillCheckInitialDelay
+			do
+				if not IsStillValid() then
+					Finish()
+
+					return
+				end
+
+				DelayElapsed +=
+					RunService.Heartbeat:Wait()
+			end
+
+			--------------------------------------------------
+			-- MIRROR THE GAME'S PIN SPEED:
+			--
+			-- 360 / (-ActionProgress + 2) * dt
+			--------------------------------------------------
+
+			local WindowEnd =
+				math.min(
+					Goal + 90,
+					359.5
+				)
+
+			local TargetAngle =
+				math.min(
+					Goal
+						+ self.Config.SkillCheckTargetOffset,
+					WindowEnd
+						- 2
+				)
+
+			TargetAngle =
+				math.max(
+					Goal + 2,
+					TargetAngle
+				)
+
+			local PinRotation =
+				0
+
+			while PinRotation
+				< TargetAngle
+				and PinRotation
+					< 360
+			do
+				if not IsStillValid() then
+					Finish()
+
+					return
+				end
+
+				local DeltaTime =
+					RunService.Heartbeat:Wait()
+
+				local Progress =
+					math.clamp(
+						tonumber(
+							self:GetStatValue(
+								"ActionProgress"
+							)
+						)
+							or 0,
+						0,
+						1
+					)
+
+				local RotationSpeed =
+					360
+					/ (
+						-Progress
+							+ 2
+					)
+
+				PinRotation +=
+					RotationSpeed
+						* DeltaTime
+			end
+
+			if not IsStillValid() then
+				Finish()
+
+				return
+			end
+
+			--------------------------------------------------
+			-- PRESS INSIDE THE SUCCESS WINDOW.
+			--
+			-- ACTIONINPUT TRUE MAKES THE GAME'S OWN CLIENT
+			-- MINIGAME STOP AND JUDGE THIS PIN POSITION.
+			-- WE ALSO SEND THE EXISTING SUCCESS REMOTE.
+			--------------------------------------------------
+
+			if PinRotation >= Goal
+				and PinRotation
+					<= Goal + 90
+			then
+				self:SetStatValue(
+					"ActionInput",
+					true
+				)
+
+				pcall(
+					function()
+						RemoteEvent:FireServer(
+							"SetPlayerMinigameResult",
+							true
+						)
+					end
+				)
+
+				local PressStarted =
+					os.clock()
+
+				while self.Config.Enabled
+					and Token
+						== self._runToken
+					and Generation
+						== self._skillCheckGeneration
+					and os.clock()
+						- PressStarted
+						< self.Config.SkillCheckPressTime
+				do
+					RunService.Heartbeat:Wait()
+				end
+
+				--------------------------------------------------
+				-- RELEASE LOCALLY FOR THE NEXT SKILL CHECK.
+				--------------------------------------------------
+
+				if Generation
+					== self._skillCheckGeneration
+				then
+					self:SetStatValue(
+						"ActionInput",
+						false
+					)
+				end
+			end
+
+			Finish()
 		end
 	)
 end
+
 
 --------------------------------------------------
 -- COMPUTER SCREEN
@@ -2281,17 +2619,30 @@ function AutoPlay:HideFromBeast(
 	local Humanoid =
 		self:GetHumanoid()
 
+	local Character =
+		self:GetCharacter()
+
 	if not Root
 		or not Humanoid
+		or not Character
 	then
 		return false
 	end
 
 	--------------------------------------------------
-	-- HARD-PAUSE AUTOPLAY TRAVEL / INTERACTION.
+	-- CLEAR ANY OLD HOLD WITHOUT RESTORING AN OLD
+	-- BEAST POSITION.
 	--------------------------------------------------
 
-	self:StopBeastHold()
+	self:StopBeastHold(
+		false
+	)
+
+	self:ClearBeastReturnSpot()
+
+	--------------------------------------------------
+	-- HARD-PAUSE AUTOPLAY TRAVEL / INTERACTION.
+	--------------------------------------------------
 
 	self._isHiding =
 		true
@@ -2301,22 +2652,34 @@ function AutoPlay:HideFromBeast(
 	self:LeaveTrigger()
 
 	--------------------------------------------------
-	-- SAVE EXACT RETURN SPOT.
+	-- CAPTURE THE EXACT SPOT FROM THIS HIDE EVENT.
+	-- THIS IS COMPLETELY SEPARATE FROM _safeReturnCFrame.
 	--------------------------------------------------
 
-	self:CaptureSafeSpot()
+	self._beastReturnCharacter =
+		Character
+
+	self._beastReturnCFrame =
+		Root.CFrame
+
+	self._beastReturnAnchored =
+		Root.Anchored
+
+	self._beastReturnAutoRotate =
+		Humanoid.AutoRotate
 
 	local ReturnCFrame =
-		Root.CFrame
+		self._beastReturnCFrame
 
 	local ReturnPosition =
 		ReturnCFrame.Position
 
-	local OriginalAnchored =
-		Root.Anchored
+	--------------------------------------------------
+	-- ALSO UPDATE THE GENERAL SAFE SPOT TO THE SAME
+	-- CURRENT POSITION FOR OTHER CLEANUP PATHS.
+	--------------------------------------------------
 
-	local OriginalAutoRotate =
-		Humanoid.AutoRotate
+	self:CaptureSafeSpot()
 
 	--------------------------------------------------
 	-- FAR-AWAY HOLDING POSITION.
@@ -2356,10 +2719,7 @@ function AutoPlay:HideFromBeast(
 	end
 
 	--------------------------------------------------
-	-- DO NOT ANCHOR.
-	--
-	-- HEARTBEAT RE-APPLIES THE HOLD CFRAME EVERY
-	-- PHYSICS FRAME UNTIL THE BEAST LEAVES RANGE.
+	-- HEARTBEAT HOLD. NO ANCHORING.
 	--------------------------------------------------
 
 	Humanoid.AutoRotate =
@@ -2399,7 +2759,7 @@ function AutoPlay:HideFromBeast(
 		)
 
 	--------------------------------------------------
-	-- CHECK DISTANCE FROM THE ORIGINAL SPOT.
+	-- WAIT UNTIL BEAST LEAVES THE ORIGINAL POSITION.
 	--------------------------------------------------
 
 	while self.Config.Enabled
@@ -2417,52 +2777,45 @@ function AutoPlay:HideFromBeast(
 		)
 	end
 
-	--------------------------------------------------
-	-- STOP HOLDING BEFORE ANY RETURN / CLEANUP.
-	--------------------------------------------------
-
-	self:StopBeastHold()
-
 	if not Root.Parent then
+		self:StopBeastHold(
+			false
+		)
+
+		self:ClearBeastReturnSpot()
+
 		return false
 	end
 
 	--------------------------------------------------
-	-- IF AN OUTSIDE STATE CHANGE CANCELLED THIS RUN,
-	-- ITS OWN SAFE-RESTORE / RESET LOGIC TAKES OVER.
+	-- ALWAYS RESTORE THE EXACT PRE-HIDE POSITION.
 	--------------------------------------------------
+
+	self:StopBeastHold(
+		true
+	)
 
 	if not self.Config.Enabled
 		or Token
 			~= self._runToken
 	then
+		self:ClearBeastReturnSpot()
+
 		return false
 	end
-
-	--------------------------------------------------
-	-- RETURN TO THE EXACT PRE-HIDE POSITION.
-	--------------------------------------------------
-
-	Root.CFrame =
-		ReturnCFrame
-
-	Root.AssemblyLinearVelocity =
-		Vector3.zero
-
-	Root.AssemblyAngularVelocity =
-		Vector3.zero
-
-	Root.Anchored =
-		OriginalAnchored
-
-	Humanoid.AutoRotate =
-		OriginalAutoRotate
 
 	self:_SetStatus(
 		"Returning"
 	)
 
+	--------------------------------------------------
+	-- NOW THAT WE ARE BACK, THIS LOCATION BECOMES
+	-- THE GENERAL SAFE SPOT TOO.
+	--------------------------------------------------
+
 	self:CaptureSafeSpot()
+
+	self:ClearBeastReturnSpot()
 
 	self:LeaveTrigger()
 
@@ -2760,7 +3113,9 @@ function AutoPlay:HackComputer(
 			-- SKILL CHECK
 			--------------------------------------------------
 
-			self:HandleSkillCheck()
+			self:HandleSkillCheck(
+				Token
+			)
 
 			--------------------------------------------------
 			-- PROGRESS
@@ -2896,6 +3251,38 @@ end
 -- EXITS
 --------------------------------------------------
 
+function AutoPlay:GetExitArea(
+	Exit
+)
+	if not Exit then
+		return nil
+	end
+
+	local ExitArea =
+		Exit:FindFirstChild(
+			"ExitArea",
+			true
+		)
+
+	if not ExitArea then
+		ExitArea =
+			Exit:FindFirstChild(
+				"ExistArea",
+				true
+			)
+	end
+
+	if ExitArea
+		and ExitArea:IsA(
+			"BasePart"
+		)
+	then
+		return ExitArea
+	end
+
+	return nil
+end
+
 function AutoPlay:GetExits()
 	local Results = {}
 
@@ -2947,14 +3334,37 @@ function AutoPlay:GetNearestExit()
 			)
 
 		if Trigger
-			and Trigger:IsA(
+			and not Trigger:IsA(
 				"BasePart"
 			)
 		then
+			Trigger =
+				nil
+		end
+
+		local ExitArea =
+			self:GetExitArea(
+				Exit
+			)
+
+		--------------------------------------------------
+		-- NORMAL CASE:
+		-- USE THE EXIT TRIGGER AS THE TARGET.
+		--
+		-- FALLBACK CASE:
+		-- IF NO VALID TRIGGER EXISTS, THE EXIT CAN STILL
+		-- BE USED IF IT HAS EXITAREA / EXISTAREA.
+		--------------------------------------------------
+
+		local Target =
+			Trigger
+				or ExitArea
+
+		if Target then
 			local Distance =
 				(
 					Root.Position
-					- Trigger.Position
+					- Target.Position
 				).Magnitude
 
 			if Distance < BestDistance then
@@ -2969,6 +3379,7 @@ function AutoPlay:GetNearestExit()
 
 	return BestExit
 end
+
 
 --------------------------------------------------
 -- USE EXIT
@@ -2988,20 +3399,22 @@ function AutoPlay:UseExit(
 			true
 		)
 
-	if not Trigger
-		or not Trigger:IsA(
+	if Trigger
+		and not Trigger:IsA(
 			"BasePart"
 		)
 	then
-		return false
+		Trigger =
+			nil
 	end
+
+	local ExitArea =
+		self:GetExitArea(
+			Exit
+		)
 
 	self:_SetObjective(
 		"Exit"
-	)
-
-	self:_SetStatus(
-		"Going to exit"
 	)
 
 	self:_SetProgress(
@@ -3009,8 +3422,63 @@ function AutoPlay:UseExit(
 	)
 
 	--------------------------------------------------
-	-- DOWN -> UNDER EXIT -> UP
+	-- FALLBACK:
+	--
+	-- IF THIS EXITDOOR HAS NO VALID EXITDOORTRIGGER
+	-- BUT DOES HAVE EXITAREA / EXISTAREA, SKIP THE
+	-- OPENING INTERACTION AND GO STRAIGHT THROUGH.
 	--------------------------------------------------
+
+	if not Trigger then
+		if not ExitArea then
+			self:_SetStatus(
+				"Exit trigger/area not found"
+			)
+
+			return false
+		end
+
+		self:_SetStatus(
+			"Going directly to exit area"
+		)
+
+		local Escaped,
+			EscapeReason =
+			self:SmoothTravelTo(
+				ExitArea,
+				Token,
+				true
+			)
+
+		if not Escaped then
+			self:_SetStatus(
+				"Escape failed: "
+					.. tostring(
+						EscapeReason
+					)
+			)
+
+			return false
+		end
+
+		self:_SetProgress(
+			1
+		)
+
+		self:_SetStatus(
+			"Escaped"
+		)
+
+		return true
+	end
+
+	--------------------------------------------------
+	-- NORMAL EXIT FLOW
+	--------------------------------------------------
+
+	self:_SetStatus(
+		"Going to exit"
+	)
 
 	local Reached,
 		Reason =
@@ -3070,7 +3538,11 @@ function AutoPlay:UseExit(
 			Progress
 		)
 
-		if Progress >= 0.999 then
+		--------------------------------------------------
+		-- ACTION COMPLETED.
+		--------------------------------------------------
+
+		if Progress >= 1 then
 			break
 		end
 
@@ -3108,25 +3580,12 @@ function AutoPlay:UseExit(
 	-- ESCAPE AREA
 	--------------------------------------------------
 
-	local ExitArea =
-		Exit:FindFirstChild(
-			"ExitArea",
-			true
+	ExitArea =
+		self:GetExitArea(
+			Exit
 		)
 
 	if not ExitArea then
-		ExitArea =
-			Exit:FindFirstChild(
-				"ExistArea",
-				true
-			)
-	end
-
-	if not ExitArea
-		or not ExitArea:IsA(
-			"BasePart"
-		)
-	then
 		self:_SetStatus(
 			"Exit area not found"
 		)
@@ -3167,6 +3626,7 @@ function AutoPlay:UseExit(
 
 	return true
 end
+
 
 --------------------------------------------------
 -- MAIN LOOP
@@ -3409,7 +3869,13 @@ function AutoPlay:SetEnabled(
 	self._runToken += 1
 
 	if not Enabled then
-		self:StopBeastHold()
+		self:StopBeastHold(
+			true
+		)
+
+		self:CaptureSafeSpot()
+
+		self:ClearBeastReturnSpot()
 
 		self:CancelTravel()
 
@@ -3804,7 +4270,11 @@ end
 function AutoPlay:Destroy()
 	self:Stop()
 
-	self:StopBeastHold()
+	self:StopBeastHold(
+		false
+	)
+
+	self:ClearBeastReturnSpot()
 
 	if self._gameActiveConnection then
 		self._gameActiveConnection:Disconnect()
