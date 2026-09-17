@@ -25,7 +25,7 @@ local AutoPlay = {}
 --------------------------------------------------
 
 AutoPlay.Name = "AutoPlay"
-AutoPlay.Version = "v3"
+AutoPlay.Version = "v4"
 
 print(
 	("[FleeTheFacility] %s %s loaded"):format(
@@ -1464,43 +1464,88 @@ end
 
 function AutoPlay:RecoverComputerError(
 	Computer,
+	Trigger,
 	Token
 )
 	self:_SetStatus(
-		"Computer error - retrying"
+		"Computer error - actively retrying"
 	)
 
-	self:LeaveTrigger()
-
-	task.wait(
-		self.Config.ErrorRetryDelay
-	)
-
-	local Started =
-		os.clock()
+	--------------------------------------------------
+	-- DO NOT WAIT FOR THE RED SCREEN TO CLEAR.
+	-- KEEP RE-SENDING THE EXISTING TRIGGER/ACTION
+	-- INTERACTION WHILE THIS COMPUTER IS ERRORED.
+	--------------------------------------------------
 
 	while self.Config.Enabled
 		and Token
 			== self._runToken
+		and not self:IsComputerDone(
+			Computer
+		)
 		and self:IsComputerError(
 			Computer
 		)
-		and os.clock()
-			- Started
-			< self.Config.ErrorMaximumWait
 	do
+		if self:IsBeastClose() then
+			self:LeaveTrigger()
+
+			return false,
+				"Threat"
+		end
+
+		if not Trigger
+			or not Trigger.Parent
+		then
+			self:LeaveTrigger()
+
+			return false,
+				"InvalidTrigger"
+		end
+
+		self:LeaveTrigger()
+
+		task.wait(
+			self.Config.ErrorRetryDelay
+		)
+
+		if not self.Config.Enabled
+			or Token
+				~= self._runToken
+		then
+			return false,
+				"Stopped"
+		end
+
+		if self:IsComputerDone(
+			Computer
+		)
+		then
+			return true,
+				"Completed"
+		end
+
 		if self:IsBeastClose() then
 			return false,
 				"Threat"
 		end
 
+		--------------------------------------------------
+		-- ACTIVE RETRY USING THE EXISTING REMOTE FLOW.
+		--------------------------------------------------
+
+		self:StartAction(
+			Trigger,
+			Token
+		)
+
 		task.wait(
-			0.05
+			self.Config.ErrorRetryDelay
 		)
 	end
 
 	return true,
-		"Recovered"
+		"Retried"
 end
 
 --------------------------------------------------
@@ -2048,6 +2093,7 @@ function AutoPlay:HackComputer(
 				ErrorReason =
 				self:RecoverComputerError(
 					Computer,
+					Trigger,
 					Token
 				)
 
@@ -2171,6 +2217,7 @@ function AutoPlay:HackComputer(
 					ErrorReason =
 					self:RecoverComputerError(
 						Computer,
+						Trigger,
 						Token
 					)
 
