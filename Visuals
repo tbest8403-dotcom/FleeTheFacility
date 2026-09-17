@@ -1,0 +1,574 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local LocalPlayer = Players.LocalPlayer
+
+local Visuals = {}
+
+Visuals.Config = {
+	Enabled = false,
+
+	ShowBeast = true,
+	ShowSurvivors = true,
+	ShowSelf = false,
+
+	ShowDistance = true,
+}
+
+Visuals._running = false
+Visuals._connections = {}
+Visuals._objects = {}
+
+--------------------------------------------------
+-- COLORS
+--------------------------------------------------
+
+Visuals.Colors = {
+	Beast = Color3.fromRGB(255, 65, 65),
+	Survivor = Color3.fromRGB(75, 210, 120),
+}
+
+--------------------------------------------------
+-- CONNECTION
+--------------------------------------------------
+
+function Visuals:_Connect(Signal, Callback)
+	local Connection =
+		Signal:Connect(Callback)
+
+	table.insert(
+		self._connections,
+		Connection
+	)
+
+	return Connection
+end
+
+--------------------------------------------------
+-- PLAYER STATS
+--------------------------------------------------
+
+function Visuals:GetStats(Player)
+	if not Player then
+		return nil
+	end
+
+	local ModuleScript =
+		Player:FindFirstChild(
+			"TempPlayerStatsModule"
+		)
+
+	if not ModuleScript then
+		return nil
+	end
+
+	local Success, Module =
+		pcall(
+			require,
+			ModuleScript
+		)
+
+	if not Success then
+		return nil
+	end
+
+	return Module
+end
+
+--------------------------------------------------
+-- ROLE
+--------------------------------------------------
+
+function Visuals:IsBeast(Player)
+	if not Player then
+		return false
+	end
+
+	local Stats =
+		self:GetStats(Player)
+
+	if Stats
+		and type(Stats.GetValue)
+			== "function"
+	then
+		local Success, Result =
+			pcall(function()
+				return Stats.GetValue(
+					"IsBeast"
+				)
+			end)
+
+		if Success then
+			return Result == true
+		end
+	end
+
+	local Character =
+		Player.Character
+
+	if Character
+		and Character:FindFirstChild(
+			"BeastPowers"
+		)
+	then
+		return true
+	end
+
+	return false
+end
+
+function Visuals:GetRole(Player)
+	if self:IsBeast(Player) then
+		return "Beast"
+	end
+
+	return "Survivor"
+end
+
+--------------------------------------------------
+-- REMOVE VISUAL
+--------------------------------------------------
+
+function Visuals:_Remove(Player)
+	local Data =
+		self._objects[Player]
+
+	if not Data then
+		return
+	end
+
+	if Data.Highlight then
+		Data.Highlight:Destroy()
+	end
+
+	if Data.Billboard then
+		Data.Billboard:Destroy()
+	end
+
+	self._objects[Player] = nil
+end
+
+--------------------------------------------------
+-- CREATE VISUAL
+--------------------------------------------------
+
+function Visuals:_Create(Player)
+	self:_Remove(Player)
+
+	if Player == LocalPlayer
+		and not self.Config.ShowSelf
+	then
+		return
+	end
+
+	local Character =
+		Player.Character
+
+	if not Character then
+		return
+	end
+
+	local Root =
+		Character:FindFirstChild(
+			"HumanoidRootPart"
+		)
+
+	if not Root then
+		return
+	end
+
+	--------------------------------------------------
+	-- HIGHLIGHT
+	--------------------------------------------------
+
+	local Highlight =
+		Instance.new("Highlight")
+
+	Highlight.Name =
+		"AdminRoleHighlight"
+
+	Highlight.DepthMode =
+		Enum.HighlightDepthMode.AlwaysOnTop
+
+	Highlight.FillTransparency =
+		0.78
+
+	Highlight.OutlineTransparency =
+		0
+
+	Highlight.Adornee =
+		Character
+
+	Highlight.Parent =
+		Character
+
+	--------------------------------------------------
+	-- BILLBOARD
+	--------------------------------------------------
+
+	local Billboard =
+		Instance.new("BillboardGui")
+
+	Billboard.Name =
+		"AdminRoleBillboard"
+
+	Billboard.Size =
+		UDim2.fromOffset(
+			180,
+			42
+		)
+
+	Billboard.StudsOffset =
+		Vector3.new(
+			0,
+			3,
+			0
+		)
+
+	Billboard.AlwaysOnTop =
+		true
+
+	Billboard.Adornee =
+		Root
+
+	Billboard.Parent =
+		Root
+
+	local Label =
+		Instance.new("TextLabel")
+
+	Label.Size =
+		UDim2.fromScale(
+			1,
+			1
+		)
+
+	Label.BackgroundTransparency =
+		1
+
+	Label.TextColor3 =
+		Color3.new(
+			1,
+			1,
+			1
+		)
+
+	Label.TextStrokeTransparency =
+		0.35
+
+	Label.TextSize =
+		13
+
+	Label.Font =
+		Enum.Font.GothamBold
+
+	Label.Parent =
+		Billboard
+
+	self._objects[Player] = {
+		Highlight =
+			Highlight,
+
+		Billboard =
+			Billboard,
+
+		Label =
+			Label,
+	}
+end
+
+--------------------------------------------------
+-- UPDATE PLAYER
+--------------------------------------------------
+
+function Visuals:_UpdatePlayer(Player)
+	if Player == LocalPlayer
+		and not self.Config.ShowSelf
+	then
+		self:_Remove(Player)
+
+		return
+	end
+
+	local Character =
+		Player.Character
+
+	if not Character then
+		self:_Remove(Player)
+
+		return
+	end
+
+	local Root =
+		Character:FindFirstChild(
+			"HumanoidRootPart"
+		)
+
+	if not Root then
+		return
+	end
+
+	local Data =
+		self._objects[Player]
+
+	if not Data then
+		self:_Create(Player)
+
+		Data =
+			self._objects[Player]
+	end
+
+	if not Data then
+		return
+	end
+
+	local Beast =
+		self:IsBeast(Player)
+
+	local Role =
+		Beast
+			and "Beast"
+			or "Survivor"
+
+	local ShouldShow
+
+	if Beast then
+		ShouldShow =
+			self.Config.ShowBeast
+	else
+		ShouldShow =
+			self.Config.ShowSurvivors
+	end
+
+	ShouldShow =
+		ShouldShow
+		and self.Config.Enabled
+
+	Data.Highlight.Enabled =
+		ShouldShow
+
+	Data.Billboard.Enabled =
+		ShouldShow
+
+	local Color =
+		Beast
+			and self.Colors.Beast
+			or self.Colors.Survivor
+
+	Data.Highlight.FillColor =
+		Color
+
+	Data.Highlight.OutlineColor =
+		Color
+
+	Data.Label.TextColor3 =
+		Color
+
+	local Text =
+		Player.Name
+		.. " ["
+		.. Role
+		.. "]"
+
+	if self.Config.ShowDistance then
+		local LocalCharacter =
+			LocalPlayer.Character
+
+		local LocalRoot =
+			LocalCharacter
+			and LocalCharacter:FindFirstChild(
+				"HumanoidRootPart"
+			)
+
+		if LocalRoot then
+			local Distance =
+				(
+					Root.Position
+					- LocalRoot.Position
+				).Magnitude
+
+			Text ..=
+				(" [%dm]"):format(
+					math.floor(Distance)
+				)
+		end
+	end
+
+	Data.Label.Text =
+		Text
+end
+
+--------------------------------------------------
+-- CREATE UI
+--------------------------------------------------
+
+function Visuals:CreateUI(Section)
+	Section:AddToggle({
+		Name =
+			"Player Visuals",
+
+		Default =
+			self.Config.Enabled,
+
+		Callback =
+			function(Value)
+				self.Config.Enabled =
+					Value
+			end,
+	})
+
+	Section:AddToggle({
+		Name =
+			"Show Beast",
+
+		Default =
+			self.Config.ShowBeast,
+
+		Callback =
+			function(Value)
+				self.Config.ShowBeast =
+					Value
+			end,
+	})
+
+	Section:AddToggle({
+		Name =
+			"Show Survivors",
+
+		Default =
+			self.Config.ShowSurvivors,
+
+		Callback =
+			function(Value)
+				self.Config.ShowSurvivors =
+					Value
+			end,
+	})
+
+	Section:AddToggle({
+		Name =
+			"Show Distance",
+
+		Default =
+			self.Config.ShowDistance,
+
+		Callback =
+			function(Value)
+				self.Config.ShowDistance =
+					Value
+			end,
+	})
+end
+
+--------------------------------------------------
+-- START
+--------------------------------------------------
+
+function Visuals:Start()
+	if self._running then
+		return
+	end
+
+	self._running =
+		true
+
+	for _, Player
+		in ipairs(
+			Players:GetPlayers()
+		)
+	do
+		self:_Create(Player)
+	end
+
+	self:_Connect(
+		Players.PlayerAdded,
+		function(Player)
+			self:_Connect(
+				Player.CharacterAdded,
+				function()
+					task.wait(0.25)
+
+					self:_Create(
+						Player
+					)
+				end
+			)
+		end
+	)
+
+	for _, Player
+		in ipairs(
+			Players:GetPlayers()
+		)
+	do
+		self:_Connect(
+			Player.CharacterAdded,
+			function()
+				task.wait(0.25)
+
+				self:_Create(
+					Player
+				)
+			end
+		)
+	end
+
+	self:_Connect(
+		Players.PlayerRemoving,
+		function(Player)
+			self:_Remove(Player)
+		end
+	)
+
+	self:_Connect(
+		RunService.RenderStepped,
+		function()
+			for _, Player
+				in ipairs(
+					Players:GetPlayers()
+				)
+			do
+				self:_UpdatePlayer(
+					Player
+				)
+			end
+		end
+	)
+end
+
+--------------------------------------------------
+-- STOP
+--------------------------------------------------
+
+function Visuals:Stop()
+	self._running =
+		false
+
+	for _, Connection
+		in ipairs(
+			self._connections
+		)
+	do
+		pcall(function()
+			Connection:Disconnect()
+		end)
+	end
+
+	table.clear(
+		self._connections
+	)
+
+	for Player
+		in pairs(
+			self._objects
+		)
+	do
+		self:_Remove(Player)
+	end
+end
+
+function Visuals:Destroy()
+	self:Stop()
+end
+
+return Visuals
