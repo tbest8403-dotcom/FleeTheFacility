@@ -1,22 +1,12 @@
-local Players =
-	game:GetService("Players")
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
 
-local TweenService =
-	game:GetService("TweenService")
-
-local ReplicatedStorage =
-	game:GetService("ReplicatedStorage")
-
-local Workspace =
-	game:GetService("Workspace")
-
-local LocalPlayer =
-	Players.LocalPlayer
+local LocalPlayer = Players.LocalPlayer
 
 local RemoteEvent =
-	ReplicatedStorage:WaitForChild(
-		"RemoteEvent"
-	)
+	ReplicatedStorage:WaitForChild("RemoteEvent")
 
 local TempPlayerStatsModule =
 	require(
@@ -31,18 +21,14 @@ local AutoPlay = {}
 -- VERSION
 --------------------------------------------------
 
-AutoPlay.Name =
-	"AutoPlay"
-
-AutoPlay.Version =
-	"v1.0.0"
+AutoPlay.Name = "AutoPlay"
+AutoPlay.Version = "v1.0.1"
 
 print(
-	("[FleeTheFacility] %s %s loaded")
-		:format(
-			AutoPlay.Name,
-			AutoPlay.Version
-		)
+	("[FleeTheFacility] %s %s loaded"):format(
+		AutoPlay.Name,
+		AutoPlay.Version
+	)
 )
 
 --------------------------------------------------
@@ -66,6 +52,22 @@ AutoPlay.Config = {
 		),
 
 	ComputerTimeout = 60,
+
+	--------------------------------------------------
+	-- INTERACTION
+	--------------------------------------------------
+
+	TriggerHorizontalPadding = 1.15,
+
+	TriggerVerticalPadding = 5,
+
+	TriggerMoveTimeout = 1.5,
+
+	TriggerConfirmTimeout = 0.75,
+
+	TriggerSettleTime = 0.08,
+
+	ActionSettleTime = 0.08,
 
 	--------------------------------------------------
 	-- BEAST
@@ -98,29 +100,23 @@ AutoPlay.Config = {
 -- STATE
 --------------------------------------------------
 
-AutoPlay.Navigator =
-	nil
+AutoPlay.Navigator = nil
 
-AutoPlay._runToken =
-	0
+AutoPlay._runToken = 0
 
-AutoPlay._currentTrigger =
-	nil
+AutoPlay._currentTrigger = nil
 
-AutoPlay._statusLabel =
-	nil
+AutoPlay._statusLabel = nil
 
-AutoPlay._objectiveLabel =
-	nil
+AutoPlay._objectiveLabel = nil
 
-AutoPlay._progressFill =
-	nil
+AutoPlay._progressFill = nil
 
-AutoPlay._progressLabel =
-	nil
+AutoPlay._progressLabel = nil
 
-AutoPlay._initialized =
-	false
+AutoPlay._initialized = false
+
+AutoPlay._lastSkillGoal = nil
 
 --------------------------------------------------
 -- INIT
@@ -133,18 +129,15 @@ function AutoPlay:Init(
 		return
 	end
 
-	self._initialized =
-		true
+	self._initialized = true
 
-	self.Navigator =
-		Navigator
+	self.Navigator = Navigator
 
 	print(
-		("[FleeTheFacility] %s %s initialized")
-			:format(
-				self.Name,
-				self.Version
-			)
+		("[FleeTheFacility] %s %s initialized"):format(
+			self.Name,
+			self.Version
+		)
 	)
 end
 
@@ -158,9 +151,7 @@ function AutoPlay:_SetStatus(
 	if self._statusLabel then
 		self._statusLabel:SetText(
 			"Status: "
-				.. tostring(
-					Text
-				)
+				.. tostring(Text)
 		)
 	end
 end
@@ -171,9 +162,7 @@ function AutoPlay:_SetObjective(
 	if self._objectiveLabel then
 		self._objectiveLabel:SetText(
 			"Objective: "
-				.. tostring(
-					Text
-				)
+				.. tostring(Text)
 		)
 	end
 end
@@ -245,6 +234,36 @@ end
 -- STATS
 --------------------------------------------------
 
+function AutoPlay:GetStatValue(
+	Name
+)
+	if not TempPlayerStatsModule then
+		return nil
+	end
+
+	if type(
+		TempPlayerStatsModule.GetValue
+	) ~= "function"
+	then
+		return nil
+	end
+
+	local Success, Value =
+		pcall(
+			function()
+				return TempPlayerStatsModule.GetValue(
+					Name
+				)
+			end
+		)
+
+	if not Success then
+		return nil
+	end
+
+	return Value
+end
+
 function AutoPlay:GetStats(
 	Player
 )
@@ -305,8 +324,7 @@ function AutoPlay:IsBeast(
 			)
 
 		if Success then
-			return Result
-				== true
+			return Result == true
 		end
 	end
 
@@ -330,8 +348,7 @@ function AutoPlay:GetBeast()
 			Players:GetPlayers()
 		)
 	do
-		if Player
-				~= LocalPlayer
+		if Player ~= LocalPlayer
 			and self:IsBeast(
 				Player
 			)
@@ -378,7 +395,214 @@ function AutoPlay:IsBeastClose()
 end
 
 --------------------------------------------------
--- REMOTE INTERACTION
+-- PHYSICAL TRIGGER POSITION
+--------------------------------------------------
+
+function AutoPlay:IsAtTrigger(
+	Trigger
+)
+	local Root =
+		self:GetRoot()
+
+	if not Root
+		or not Trigger
+		or not Trigger.Parent
+	then
+		return false
+	end
+
+	local LocalPosition =
+		Trigger.CFrame:PointToObjectSpace(
+			Root.Position
+		)
+
+	local HalfSize =
+		Trigger.Size / 2
+
+	local Horizontal =
+		self.Config.TriggerHorizontalPadding
+
+	local Vertical =
+		self.Config.TriggerVerticalPadding
+
+	return math.abs(
+		LocalPosition.X
+	) <= HalfSize.X + Horizontal
+		and math.abs(
+			LocalPosition.Z
+		) <= HalfSize.Z + Horizontal
+		and math.abs(
+			LocalPosition.Y
+		) <= HalfSize.Y + Vertical
+end
+
+--------------------------------------------------
+-- SETTLE INTO TRIGGER
+--------------------------------------------------
+
+function AutoPlay:SettleIntoTrigger(
+	Trigger,
+	Token
+)
+	if not Trigger
+		or not Trigger.Parent
+	then
+		return false,
+			"MissingTrigger"
+	end
+
+	if self:IsAtTrigger(
+		Trigger
+	)
+	then
+		return true
+	end
+
+	local Humanoid =
+		self:GetHumanoid()
+
+	local Root =
+		self:GetRoot()
+
+	if not Humanoid
+		or not Root
+	then
+		return false,
+			"NoCharacter"
+	end
+
+	--------------------------------------------------
+	-- MOVE HORIZONTALLY TOWARD ACTUAL TRIGGER
+	--
+	-- DON'T CHANGE WALKSPEED
+	--------------------------------------------------
+
+	local Destination =
+		Vector3.new(
+			Trigger.Position.X,
+			Root.Position.Y,
+			Trigger.Position.Z
+		)
+
+	Humanoid:MoveTo(
+		Destination
+	)
+
+	local Started =
+		os.clock()
+
+	while os.clock()
+		- Started
+		< self.Config.TriggerMoveTimeout
+	do
+		if not self.Config.Enabled
+			or Token
+				~= self._runToken
+		then
+			return false,
+				"Stopped"
+		end
+
+		if self:IsBeastClose() then
+			return false,
+				"Threat"
+		end
+
+		if self:IsAtTrigger(
+			Trigger
+		)
+		then
+			Humanoid:MoveTo(
+				Root.Position
+			)
+
+			task.wait(
+				self.Config.TriggerSettleTime
+			)
+
+			return true
+		end
+
+		Root =
+			self:GetRoot()
+
+		if not Root then
+			return false,
+				"NoCharacter"
+		end
+
+		task.wait(
+			0.03
+		)
+	end
+
+	return self:IsAtTrigger(
+		Trigger
+	),
+		"TriggerPositionTimeout"
+end
+
+--------------------------------------------------
+-- WAIT FOR GAME TO REGISTER TRIGGER
+--------------------------------------------------
+
+function AutoPlay:WaitForTriggerConfirmation(
+	Token
+)
+	local Started =
+		os.clock()
+
+	while os.clock()
+		- Started
+		< self.Config.TriggerConfirmTimeout
+	do
+		if not self.Config.Enabled
+			or Token
+				~= self._runToken
+		then
+			return false
+		end
+
+		local OnTrigger =
+			self:GetStatValue(
+				"OnTrigger"
+			)
+
+		--------------------------------------------------
+		-- GAME CONFIRMED TRIGGER
+		--------------------------------------------------
+
+		if OnTrigger == true then
+			return true
+		end
+
+		--------------------------------------------------
+		-- IF THIS STAT ISN'T EXPOSED,
+		-- DON'T BLOCK THE SYSTEM FOREVER.
+		--------------------------------------------------
+
+		if OnTrigger == nil
+			and os.clock()
+				- Started
+				>= self.Config.TriggerSettleTime
+		then
+			return true
+		end
+
+		task.wait(
+			0.025
+		)
+	end
+
+	--------------------------------------------------
+	-- ALLOW FALLBACK AFTER TIMEOUT
+	--------------------------------------------------
+
+	return true
+end
+
+--------------------------------------------------
+-- LEAVE TRIGGER
 --------------------------------------------------
 
 function AutoPlay:LeaveTrigger()
@@ -419,6 +643,9 @@ function AutoPlay:LeaveTrigger()
 
 	self._currentTrigger =
 		nil
+
+	self._lastSkillGoal =
+		nil
 end
 
 --------------------------------------------------
@@ -426,7 +653,8 @@ end
 --------------------------------------------------
 
 function AutoPlay:EnterTrigger(
-	Trigger
+	Trigger,
+	Token
 )
 	if not Trigger
 		or not Trigger.Parent
@@ -464,8 +692,17 @@ function AutoPlay:EnterTrigger(
 		end
 	)
 
+	--------------------------------------------------
+	-- THIS IS THE IMPORTANT FIX:
+	-- WAIT UNTIL TRIGGER STATE HAS TIME TO REGISTER
+	--------------------------------------------------
+
+	self:WaitForTriggerConfirmation(
+		Token
+	)
+
 	task.wait(
-		0.08
+		self.Config.TriggerSettleTime
 	)
 
 	return true
@@ -476,10 +713,12 @@ end
 --------------------------------------------------
 
 function AutoPlay:StartAction(
-	Trigger
+	Trigger,
+	Token
 )
 	if not self:EnterTrigger(
-		Trigger
+		Trigger,
+		Token
 	)
 	then
 		return false
@@ -495,6 +734,10 @@ function AutoPlay:StartAction(
 		end
 	)
 
+	task.wait(
+		self.Config.ActionSettleTime
+	)
+
 	return true
 end
 
@@ -504,17 +747,20 @@ end
 
 function AutoPlay:PulseAction(
 	Trigger,
-	Time
+	Token,
+	HoldTime
 )
 	if not self:StartAction(
-		Trigger
+		Trigger,
+		Token
 	)
 	then
 		return false
 	end
 
 	task.wait(
-		Time or 0.14
+		HoldTime
+			or 0.14
 	)
 
 	self:LeaveTrigger()
@@ -527,18 +773,10 @@ end
 --------------------------------------------------
 
 function AutoPlay:GetActionProgress()
-	local Success, Value =
-		pcall(
-			function()
-				return TempPlayerStatsModule.GetValue(
-					"ActionProgress"
-				)
-			end
+	local Value =
+		self:GetStatValue(
+			"ActionProgress"
 		)
-
-	if not Success then
-		return 0
-	end
 
 	return math.clamp(
 		tonumber(Value)
@@ -553,26 +791,34 @@ end
 --------------------------------------------------
 
 function AutoPlay:HandleSkillCheck()
-	local Success, Goal =
-		pcall(
-			function()
-				return TempPlayerStatsModule.GetValue(
-					"TimingGoalPosition"
-				)
-			end
+	local Goal =
+		self:GetStatValue(
+			"TimingGoalPosition"
 		)
-
-	if not Success then
-		return
-	end
 
 	Goal =
 		tonumber(Goal)
 			or 0
 
 	if Goal <= 0 then
+		self._lastSkillGoal =
+			nil
+
 		return
 	end
+
+	--------------------------------------------------
+	-- DON'T SEND SAME CHECK EVERY FRAME
+	--------------------------------------------------
+
+	if self._lastSkillGoal
+		== Goal
+	then
+		return
+	end
+
+	self._lastSkillGoal =
+		Goal
 
 	pcall(
 		function()
@@ -729,9 +975,7 @@ function AutoPlay:IsTriggerOccupied(
 			Players:GetPlayers()
 		)
 	do
-		if Player
-			~= LocalPlayer
-		then
+		if Player ~= LocalPlayer then
 			local Character =
 				Player.Character
 
@@ -749,8 +993,7 @@ function AutoPlay:IsTriggerOccupied(
 
 			if Root
 				and Humanoid
-				and Humanoid.Health
-					> 0
+				and Humanoid.Health > 0
 			then
 				local Distance =
 					(
@@ -851,9 +1094,7 @@ function AutoPlay:GetNearestComputerTarget()
 						- Trigger.Position
 					).Magnitude
 
-				if Distance
-					< BestDistance
-				then
+				if Distance < BestDistance then
 					BestDistance =
 						Distance
 
@@ -872,7 +1113,7 @@ function AutoPlay:GetNearestComputerTarget()
 end
 
 --------------------------------------------------
--- ALL COMPUTERS FINISHED
+-- ALL COMPUTERS DONE
 --------------------------------------------------
 
 function AutoPlay:AreComputersDone()
@@ -993,9 +1234,7 @@ local function DistanceToSegment(
 			AB
 		)
 
-	if LengthSquared
-		<= 0
-	then
+	if LengthSquared <= 0 then
 		return (
 			Point - A
 		).Magnitude,
@@ -1078,8 +1317,7 @@ function AutoPlay:FindDoorOnRoute(
 						<= self.Config.DoorRouteDistance
 					and Alpha > 0.03
 					and Alpha < 0.97
-					and Alpha
-						< BestAlpha
+					and Alpha < BestAlpha
 				then
 					BestDoor =
 						Door
@@ -1162,7 +1400,7 @@ function AutoPlay:NavigateTo(
 end
 
 --------------------------------------------------
--- OPEN SINGLE DOOR
+-- OPEN DOOR
 --------------------------------------------------
 
 function AutoPlay:OpenDoor(
@@ -1203,8 +1441,21 @@ function AutoPlay:OpenDoor(
 			Reason
 	end
 
+	local Settled,
+		SettleReason =
+		self:SettleIntoTrigger(
+			Trigger,
+			Token
+		)
+
+	if not Settled then
+		return false,
+			SettleReason
+	end
+
 	if not self:PulseAction(
 		Trigger,
+		Token,
 		0.14
 	)
 	then
@@ -1241,7 +1492,7 @@ function AutoPlay:OpenDoor(
 end
 
 --------------------------------------------------
--- NAVIGATE WITH DOOR SUPPORT
+-- NAVIGATE WITH DOORS
 --------------------------------------------------
 
 function AutoPlay:NavigateWithDoors(
@@ -1298,8 +1549,7 @@ function AutoPlay:NavigateWithDoors(
 			)
 
 		if not Opened
-			and Reason
-				== "Threat"
+			and Reason == "Threat"
 		then
 			return false,
 				Reason
@@ -1497,6 +1747,16 @@ function AutoPlay:HideFromBeast(
 	Humanoid.AutoRotate =
 		OriginalAutoRotate
 
+	--------------------------------------------------
+	-- CLEAR ANY STALE TRIGGER STATE AFTER HIDE
+	--------------------------------------------------
+
+	self:LeaveTrigger()
+
+	task.wait(
+		0.08
+	)
+
 	return true
 end
 
@@ -1555,9 +1815,7 @@ function AutoPlay:HackComputer(
 		)
 
 	if not Reached then
-		if Reason
-			== "Threat"
-		then
+		if Reason == "Threat" then
 			self:HideFromBeast(
 				Token
 			)
@@ -1592,12 +1850,62 @@ function AutoPlay:HackComputer(
 		return false
 	end
 
+	--------------------------------------------------
+	-- IMPORTANT:
+	-- NAVIGATOR GOT US NEAR IT.
+	-- NOW SETTLE INTO REAL TRIGGER POSITION.
+	--------------------------------------------------
+
+	self:_SetStatus(
+		"Positioning"
+	)
+
+	local Settled,
+		SettleReason =
+		self:SettleIntoTrigger(
+			Trigger,
+			Token
+		)
+
+	if not Settled then
+		if SettleReason
+			== "Threat"
+		then
+			self:HideFromBeast(
+				Token
+			)
+		end
+
+		return false
+	end
+
+	if self:IsComputerDone(
+		Computer
+	)
+	then
+		return true
+	end
+
+	if self:IsTriggerOccupied(
+		Trigger
+	)
+	then
+		return false
+	end
+
 	self:_SetStatus(
 		"Hacking"
 	)
 
+	--------------------------------------------------
+	-- TRIGGER TRUE
+	-- WAIT FOR ONTRIGGER
+	-- THEN ACTION TRUE
+	--------------------------------------------------
+
 	if not self:StartAction(
-		Trigger
+		Trigger,
+		Token
 	)
 	then
 		return false
@@ -1627,6 +1935,22 @@ function AutoPlay:HackComputer(
 			self:HideFromBeast(
 				Token
 			)
+
+			return false
+		end
+
+		--------------------------------------------------
+		-- IF WE SOMEHOW LOST THE TRIGGER,
+		-- STOP AND RETRY IN MAIN LOOP.
+		--------------------------------------------------
+
+		local OnTrigger =
+			self:GetStatValue(
+				"OnTrigger"
+			)
+
+		if OnTrigger == false then
+			self:LeaveTrigger()
 
 			return false
 		end
@@ -1712,9 +2036,7 @@ function AutoPlay:GetNearestExit()
 						- Trigger.Position
 					).Magnitude
 
-				if Distance
-					< BestDistance
-				then
+				if Distance < BestDistance then
 					BestDistance =
 						Distance
 
@@ -1729,7 +2051,7 @@ function AutoPlay:GetNearestExit()
 end
 
 --------------------------------------------------
--- EXIT ACTION
+-- USE EXIT
 --------------------------------------------------
 
 function AutoPlay:UseExit(
@@ -1774,7 +2096,28 @@ function AutoPlay:UseExit(
 		)
 
 	if not Reached then
-		if Reason
+		if Reason == "Threat" then
+			self:HideFromBeast(
+				Token
+			)
+		end
+
+		return false
+	end
+
+	--------------------------------------------------
+	-- SAME TRIGGER SETTLE FIX FOR EXIT
+	--------------------------------------------------
+
+	local Settled,
+		SettleReason =
+		self:SettleIntoTrigger(
+			Trigger,
+			Token
+		)
+
+	if not Settled then
+		if SettleReason
 			== "Threat"
 		then
 			self:HideFromBeast(
@@ -1790,7 +2133,8 @@ function AutoPlay:UseExit(
 	)
 
 	if not self:StartAction(
-		Trigger
+		Trigger,
+		Token
 	)
 	then
 		return false
@@ -2057,22 +2401,20 @@ function AutoPlay:SetEnabled(
 		)
 
 		print(
-			("[FleeTheFacility] %s %s disabled")
-				:format(
-					self.Name,
-					self.Version
-				)
+			("[FleeTheFacility] %s %s disabled"):format(
+				self.Name,
+				self.Version
+			)
 		)
 
 		return
 	end
 
 	print(
-		("[FleeTheFacility] %s %s enabled")
-			:format(
-				self.Name,
-				self.Version
-			)
+		("[FleeTheFacility] %s %s enabled"):format(
+			self.Name,
+			self.Version
+		)
 	)
 
 	task.spawn(
@@ -2103,9 +2445,12 @@ function AutoPlay:CreateUI(
 				"Objective: None",
 		})
 
+	--------------------------------------------------
+	-- PROGRESS BAR
+	--------------------------------------------------
+
 	Section:AddCustom({
-		Height =
-			48,
+		Height = 48,
 
 		Builder =
 			function(
@@ -2277,6 +2622,10 @@ function AutoPlay:CreateUI(
 			end,
 	})
 
+	--------------------------------------------------
+	-- AUTO PLAY
+	--------------------------------------------------
+
 	Section:AddToggle({
 		Name =
 			"Auto Play",
@@ -2293,6 +2642,10 @@ function AutoPlay:CreateUI(
 				)
 			end,
 	})
+
+	--------------------------------------------------
+	-- BEAST DISTANCE
+	--------------------------------------------------
 
 	Section:AddSlider({
 		Name =
@@ -2321,6 +2674,10 @@ function AutoPlay:CreateUI(
 					Value + 7
 			end,
 	})
+
+	--------------------------------------------------
+	-- HIDE DEPTH
+	--------------------------------------------------
 
 	Section:AddSlider({
 		Name =
@@ -2366,11 +2723,10 @@ function AutoPlay:Destroy()
 	self:Stop()
 
 	print(
-		("[FleeTheFacility] %s %s destroyed")
-			:format(
-				self.Name,
-				self.Version
-			)
+		("[FleeTheFacility] %s %s destroyed"):format(
+			self.Name,
+			self.Version
+		)
 	)
 end
 
