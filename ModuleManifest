@@ -1,0 +1,66 @@
+local Manifest = {}
+
+Manifest.Name =
+	"ModuleManifest"
+
+Manifest.Version =
+	"v1.0.0"
+
+Manifest.Modules = {
+	--------------------------------------------------
+	-- CORE
+	--------------------------------------------------
+
+	{
+		Name =
+			"UILibrary",
+
+		Required =
+			true,
+	},
+
+	{
+		Name =
+			"Visuals",
+
+		Required =
+			true,
+	},
+
+	{
+		Name =
+			"ComputerVisuals",
+
+		Required =
+			true,
+	},
+
+	{
+		Name =
+			"Navigator",
+
+		Required =
+			true,
+	},
+
+	{
+		Name =
+			"AutoPlay",
+
+		Required =
+			true,
+	},
+
+	--------------------------------------------------
+	-- FUTURE MODULES
+	--
+	-- JUST ADD THEM LIKE:
+	--
+	-- {
+	--     Name = "NewModule",
+	--     Required = false,
+	-- },
+	--------------------------------------------------
+}
+
+return Manifest
