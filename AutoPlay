@@ -1,17 +1,9 @@
-local Players =
-	game:GetService("Players")
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
 
-local TweenService =
-	game:GetService("TweenService")
-
-local ReplicatedStorage =
-	game:GetService("ReplicatedStorage")
-
-local Workspace =
-	game:GetService("Workspace")
-
-local LocalPlayer =
-	Players.LocalPlayer
+local LocalPlayer = Players.LocalPlayer
 
 local AutoPlay = {}
 
@@ -24,29 +16,35 @@ AutoPlay.Config = {
 
 	MoveSpeed = 28,
 
-	ComputerOffset =
-		Vector3.new(
-			0,
-			2.5,
-			0
-		),
+	ComputerOffset = Vector3.new(
+		0,
+		2.5,
+		0
+	),
 
-	ExitOffset =
-		Vector3.new(
-			0,
-			2.5,
-			0
-		),
+	ExitOffset = Vector3.new(
+		0,
+		2.5,
+		0
+	),
 
 	BeastAvoidDistance = 55,
-
 	BeastResumeDistance = 75,
 
 	HideDepth = 16,
 
+	TriggerOccupancyRadius = 4.5,
+
 	AutoSkillCheck = true,
 
 	InteractionTimeout = 35,
+
+	ComputerDoneColor =
+		Color3.fromRGB(
+			40,
+			127,
+			71
+		),
 }
 
 --------------------------------------------------
@@ -54,24 +52,38 @@ AutoPlay.Config = {
 --------------------------------------------------
 
 AutoPlay._runToken = 0
-
 AutoPlay._currentTween = nil
 
 AutoPlay._statusLabel = nil
-
 AutoPlay._objectiveLabel = nil
 
 AutoPlay._progressLabel = nil
-
 AutoPlay._progressFill = nil
 
 AutoPlay._initialized = false
 
 AutoPlay._remote = nil
-
 AutoPlay._computersLeft = nil
-
 AutoPlay._stats = nil
+
+--------------------------------------------------
+-- HELPERS
+--------------------------------------------------
+
+local function ColorsMatch(
+	A,
+	B
+)
+	local Tolerance =
+		1 / 255
+
+	return math.abs(A.R - B.R)
+			<= Tolerance
+		and math.abs(A.G - B.G)
+			<= Tolerance
+		and math.abs(A.B - B.B)
+			<= Tolerance
+end
 
 --------------------------------------------------
 -- UI
@@ -148,9 +160,12 @@ end
 --------------------------------------------------
 
 function AutoPlay:GetStats(Player)
+	if not Player then
+		return nil
+	end
+
 	local ModuleScript =
-		Player
-		and Player:FindFirstChild(
+		Player:FindFirstChild(
 			"TempPlayerStatsModule"
 		)
 
@@ -171,15 +186,24 @@ function AutoPlay:GetStats(Player)
 	return nil
 end
 
+--------------------------------------------------
+-- BEAST
+--------------------------------------------------
+
 function AutoPlay:IsBeast(Player)
+	if not Player then
+		return false
+	end
+
 	local Stats =
 		self:GetStats(Player)
 
 	if Stats
-		and type(Stats.GetValue)
-			== "function"
+		and type(
+			Stats.GetValue
+		) == "function"
 	then
-		local Success, Value =
+		local Success, Result =
 			pcall(function()
 				return Stats.GetValue(
 					"IsBeast"
@@ -187,26 +211,25 @@ function AutoPlay:IsBeast(Player)
 			end)
 
 		if Success
-			and Value == true
+			and Result == true
 		then
 			return true
 		end
 	end
 
 	local Character =
-		Player
-		and Player.Character
+		Player.Character
 
-	return Character
+	if Character
 		and Character:FindFirstChild(
 			"BeastPowers"
 		)
-		~= nil
-end
+	then
+		return true
+	end
 
---------------------------------------------------
--- FIND BEAST
---------------------------------------------------
+	return false
+end
 
 function AutoPlay:GetBeast()
 	for _, Player
@@ -215,7 +238,9 @@ function AutoPlay:GetBeast()
 		)
 	do
 		if Player ~= LocalPlayer
-			and self:IsBeast(Player)
+			and self:IsBeast(
+				Player
+			)
 		then
 			return Player
 		end
@@ -281,49 +306,15 @@ function AutoPlay:GetPosition(Object)
 			true
 		)
 
-	return Part
-		and Part.Position
-end
-
---------------------------------------------------
--- COMPUTER TRIGGER
---------------------------------------------------
-
-function AutoPlay:GetComputerTrigger(
-	Computer
-)
-	if not Computer then
-		return nil
-	end
-
-	for Index = 1, 3 do
-		local Trigger =
-			Computer:FindFirstChild(
-				"ComputerTrigger"
-					.. Index,
-				true
-			)
-
-		if Trigger then
-			local ActionSign =
-				Trigger:FindFirstChild(
-					"ActionSign"
-				)
-
-			if ActionSign
-				and ActionSign.Value
-					== 20
-			then
-				return Trigger
-			end
-		end
+	if Part then
+		return Part.Position
 	end
 
 	return nil
 end
 
 --------------------------------------------------
--- COMPUTER COMPLETE
+-- COMPUTER FINISHED CHECK
 --------------------------------------------------
 
 function AutoPlay:IsComputerDone(
@@ -332,6 +323,29 @@ function AutoPlay:IsComputerDone(
 	if not Computer then
 		return true
 	end
+
+	local Screen =
+		Computer:FindFirstChild(
+			"Screen"
+		)
+
+	if Screen
+		and Screen:IsA(
+			"BasePart"
+		)
+	then
+		if ColorsMatch(
+			Screen.Color,
+			self.Config.ComputerDoneColor
+		)
+		then
+			return true
+		end
+	end
+
+	--------------------------------------------------
+	-- OPTIONAL FALLBACKS
+	--------------------------------------------------
 
 	if Computer:GetAttribute(
 		"Completed"
@@ -347,13 +361,182 @@ function AutoPlay:IsComputerDone(
 		return true
 	end
 
-	return self:GetComputerTrigger(
-		Computer
-	) == nil
+	return false
 end
 
 --------------------------------------------------
--- GET COMPUTERS
+-- VALID COMPUTER TRIGGER
+--------------------------------------------------
+
+function AutoPlay:IsValidComputerTrigger(
+	Trigger
+)
+	if not Trigger then
+		return false
+	end
+
+	if not Trigger:IsA(
+		"BasePart"
+	) then
+		return false
+	end
+
+	local ActionSign =
+		Trigger:FindFirstChild(
+			"ActionSign"
+		)
+
+	local Event =
+		Trigger:FindFirstChild(
+			"Event"
+		)
+
+	if not ActionSign
+		or not Event
+	then
+		return false
+	end
+
+	if ActionSign.Value
+		~= 20
+	then
+		return false
+	end
+
+	return true
+end
+
+--------------------------------------------------
+-- TRIGGER OCCUPANCY
+--------------------------------------------------
+
+function AutoPlay:IsTriggerOccupied(
+	Trigger
+)
+	if not Trigger
+		or not Trigger:IsA(
+			"BasePart"
+		)
+	then
+		return true
+	end
+
+	for _, Player
+		in ipairs(
+			Players:GetPlayers()
+		)
+	do
+		if Player ~= LocalPlayer then
+			local Character =
+				Player.Character
+
+			local Humanoid =
+				Character
+				and Character:FindFirstChildOfClass(
+					"Humanoid"
+				)
+
+			local Root =
+				Character
+				and Character:FindFirstChild(
+					"HumanoidRootPart"
+				)
+
+			if Root
+				and (
+					not Humanoid
+					or Humanoid.Health > 0
+				)
+			then
+				local Distance =
+					(
+						Root.Position
+						- Trigger.Position
+					).Magnitude
+
+				if Distance
+					<= self.Config.TriggerOccupancyRadius
+				then
+					return true,
+						Player
+				end
+			end
+		end
+	end
+
+	return false,
+		nil
+end
+
+--------------------------------------------------
+-- GET COMPUTER TRIGGERS
+--------------------------------------------------
+
+function AutoPlay:GetComputerTriggers(
+	Computer
+)
+	local Results = {}
+
+	if not Computer then
+		return Results
+	end
+
+	for Index = 1, 3 do
+		local Trigger =
+			Computer:FindFirstChild(
+				"ComputerTrigger"
+					.. Index,
+				true
+			)
+
+		if self:IsValidComputerTrigger(
+			Trigger
+		)
+		then
+			table.insert(
+				Results,
+				Trigger
+			)
+		end
+	end
+
+	return Results
+end
+
+--------------------------------------------------
+-- AVAILABLE TRIGGERS
+--------------------------------------------------
+
+function AutoPlay:GetAvailableTriggers(
+	Computer
+)
+	local Available = {}
+
+	for _, Trigger
+		in ipairs(
+			self:GetComputerTriggers(
+				Computer
+			)
+		)
+	do
+		local Occupied =
+			self:IsTriggerOccupied(
+				Trigger
+			)
+
+		if not Occupied then
+			table.insert(
+				Available,
+				Trigger
+			)
+		end
+	end
+
+	return Available
+end
+
+--------------------------------------------------
+-- COMPUTERS
 --------------------------------------------------
 
 function AutoPlay:GetComputers()
@@ -378,18 +561,21 @@ function AutoPlay:GetComputers()
 end
 
 --------------------------------------------------
--- NEAREST COMPUTER
+-- NEAREST FREE COMPUTER/TRIGGER
 --------------------------------------------------
 
-function AutoPlay:GetNearestComputer()
+function AutoPlay:GetNearestComputerTarget()
 	local Root =
 		self:GetRoot()
 
 	if not Root then
-		return nil
+		return nil,
+			nil
 	end
 
 	local BestComputer = nil
+	local BestTrigger = nil
+
 	local BestDistance =
 		math.huge
 
@@ -398,20 +584,32 @@ function AutoPlay:GetNearestComputer()
 			self:GetComputers()
 		)
 	do
+		--------------------------------------------------
+		-- SKIP GREEN / DONE
+		--------------------------------------------------
+
 		if not self:IsComputerDone(
 			Computer
 		)
 		then
-			local Position =
-				self:GetPosition(
+			--------------------------------------------------
+			-- CHECK ALL THREE SPOTS
+			--------------------------------------------------
+
+			local AvailableTriggers =
+				self:GetAvailableTriggers(
 					Computer
 				)
 
-			if Position then
+			for _, Trigger
+				in ipairs(
+					AvailableTriggers
+				)
+			do
 				local Distance =
 					(
-						Position
-						- Root.Position
+						Root.Position
+						- Trigger.Position
 					).Magnitude
 
 				if Distance
@@ -422,16 +620,20 @@ function AutoPlay:GetNearestComputer()
 
 					BestComputer =
 						Computer
+
+					BestTrigger =
+						Trigger
 				end
 			end
 		end
 	end
 
-	return BestComputer
+	return BestComputer,
+		BestTrigger
 end
 
 --------------------------------------------------
--- FIND EXIT
+-- EXIT
 --------------------------------------------------
 
 function AutoPlay:GetNearestExit()
@@ -443,6 +645,7 @@ function AutoPlay:GetNearestExit()
 	end
 
 	local Best = nil
+
 	local BestDistance =
 		math.huge
 
@@ -462,8 +665,8 @@ function AutoPlay:GetNearestExit()
 			if Position then
 				local Distance =
 					(
-						Position
-						- Root.Position
+						Root.Position
+						- Position
 					).Magnitude
 
 				if Distance
@@ -483,7 +686,7 @@ function AutoPlay:GetNearestExit()
 end
 
 --------------------------------------------------
--- MOVE
+-- TWEEN
 --------------------------------------------------
 
 function AutoPlay:CancelTween()
@@ -500,8 +703,12 @@ end
 function AutoPlay:MoveTo(
 	TargetCFrame,
 	Token,
-	IgnoreThreat
+	Options
 )
+	Options =
+		Options
+		or {}
+
 	local Root =
 		self:GetRoot()
 
@@ -564,7 +771,11 @@ function AutoPlay:MoveTo(
 				"Stopped"
 		end
 
-		if not IgnoreThreat
+		--------------------------------------------------
+		-- BEAST
+		--------------------------------------------------
+
+		if not Options.IgnoreThreat
 			and self:IsBeastClose()
 		then
 			Tween:Cancel()
@@ -573,7 +784,42 @@ function AutoPlay:MoveTo(
 				"Threat"
 		end
 
-		task.wait(0.05)
+		--------------------------------------------------
+		-- TRIGGER GOT TAKEN
+		--------------------------------------------------
+
+		if Options.Trigger then
+			local Occupied =
+				self:IsTriggerOccupied(
+					Options.Trigger
+				)
+
+			if Occupied then
+				Tween:Cancel()
+
+				return false,
+					"Occupied"
+			end
+		end
+
+		--------------------------------------------------
+		-- COMPUTER FINISHED WHILE MOVING
+		--------------------------------------------------
+
+		if Options.Computer
+			and self:IsComputerDone(
+				Options.Computer
+			)
+		then
+			Tween:Cancel()
+
+			return false,
+				"Completed"
+		end
+
+		task.wait(
+			0.05
+		)
 	end
 
 	if self._currentTween
@@ -583,7 +829,8 @@ function AutoPlay:MoveTo(
 			nil
 	end
 
-	return true
+	return true,
+		"Reached"
 end
 
 --------------------------------------------------
@@ -615,7 +862,9 @@ function AutoPlay:StartInteraction(
 		Event
 	)
 
-	task.wait(0.08)
+	task.wait(
+		0.08
+	)
 
 	self._remote:FireServer(
 		"Input",
@@ -669,7 +918,9 @@ function AutoPlay:StopInteraction()
 		end)
 	end
 
-	self:_SetProgress(0)
+	self:_SetProgress(
+		0
+	)
 end
 
 --------------------------------------------------
@@ -734,7 +985,7 @@ function AutoPlay:HandleSkillCheck()
 end
 
 --------------------------------------------------
--- HIDE FROM BEAST
+-- HIDE
 --------------------------------------------------
 
 function AutoPlay:HideFromBeast(
@@ -767,7 +1018,10 @@ function AutoPlay:HideFromBeast(
 	self:MoveTo(
 		HiddenCFrame,
 		Token,
-		true
+		{
+			IgnoreThreat =
+				true,
+		}
 	)
 
 	while self.Config.Enabled
@@ -780,7 +1034,9 @@ function AutoPlay:HideFromBeast(
 			break
 		end
 
-		task.wait(0.15)
+		task.wait(
+			0.15
+		)
 	end
 
 	if not self.Config.Enabled
@@ -791,13 +1047,16 @@ function AutoPlay:HideFromBeast(
 	end
 
 	self:_SetStatus(
-		"Beast moved away"
+		"Returning"
 	)
 
 	self:MoveTo(
 		ReturnCFrame,
 		Token,
-		true
+		{
+			IgnoreThreat =
+				true,
+		}
 	)
 
 	return true
@@ -809,25 +1068,45 @@ end
 
 function AutoPlay:HackComputer(
 	Computer,
+	Trigger,
 	Token
 )
-	local Trigger =
-		self:GetComputerTrigger(
-			Computer
-		)
+	if not Computer
+		or not Trigger
+	then
+		return false
+	end
 
-	if not Trigger then
+	--------------------------------------------------
+	-- COMPUTER ALREADY DONE
+	--------------------------------------------------
+
+	if self:IsComputerDone(
+		Computer
+	)
+	then
 		return true
 	end
 
-	if not Trigger:IsA(
-		"BasePart"
-	) then
+	--------------------------------------------------
+	-- TRIGGER ALREADY TAKEN
+	--------------------------------------------------
+
+	local Occupied =
+		self:IsTriggerOccupied(
+			Trigger
+		)
+
+	if Occupied then
+		self:_SetStatus(
+			"Spot taken - switching"
+		)
+
 		return false
 	end
 
 	self:_SetObjective(
-		Computer:GetFullName()
+		"Computer"
 	)
 
 	self:_SetStatus(
@@ -837,9 +1116,15 @@ function AutoPlay:HackComputer(
 	local Arrived, Reason =
 		self:MoveTo(
 			Trigger.CFrame
-			+ self.Config.ComputerOffset,
+				+ self.Config.ComputerOffset,
 			Token,
-			false
+			{
+				Computer =
+					Computer,
+
+				Trigger =
+					Trigger,
+			}
 		)
 
 	if not Arrived then
@@ -847,7 +1132,45 @@ function AutoPlay:HackComputer(
 			self:HideFromBeast(
 				Token
 			)
+
+		elseif Reason
+			== "Occupied"
+		then
+			self:_SetStatus(
+				"Spot taken - switching"
+			)
+
+		elseif Reason
+			== "Completed"
+		then
+			self:_SetStatus(
+				"Computer already complete"
+			)
 		end
+
+		return false
+	end
+
+	--------------------------------------------------
+	-- CHECK AGAIN AFTER ARRIVAL
+	--------------------------------------------------
+
+	if self:IsComputerDone(
+		Computer
+	)
+	then
+		return true
+	end
+
+	Occupied =
+		self:IsTriggerOccupied(
+			Trigger
+		)
+
+	if Occupied then
+		self:_SetStatus(
+			"Spot taken - switching"
+		)
 
 		return false
 	end
@@ -860,14 +1183,22 @@ function AutoPlay:HackComputer(
 		return false
 	end
 
+	--------------------------------------------------
+	-- START HACKING
+	--------------------------------------------------
+
 	self:_SetStatus(
-		"Hacking computer"
+		"Hacking"
 	)
 
 	if not self:StartInteraction(
 		Trigger
 	)
 	then
+		self:_SetStatus(
+			"Interaction failed"
+		)
+
 		return false
 	end
 
@@ -878,12 +1209,24 @@ function AutoPlay:HackComputer(
 		and Token
 			== self._runToken
 	do
+		--------------------------------------------------
+		-- COMPUTER TURNED GREEN
+		--------------------------------------------------
+
 		if self:IsComputerDone(
 			Computer
 		)
 		then
+			self:_SetProgress(
+				1
+			)
+
 			break
 		end
+
+		--------------------------------------------------
+		-- BEAST
+		--------------------------------------------------
 
 		if self:IsBeastClose() then
 			self:StopInteraction()
@@ -895,6 +1238,10 @@ function AutoPlay:HackComputer(
 			return false
 		end
 
+		--------------------------------------------------
+		-- PROGRESS
+		--------------------------------------------------
+
 		local Progress =
 			self:GetActionProgress()
 
@@ -904,9 +1251,9 @@ function AutoPlay:HackComputer(
 
 		self:HandleSkillCheck()
 
-		if Progress >= 1 then
-			break
-		end
+		--------------------------------------------------
+		-- TIMEOUT
+		--------------------------------------------------
 
 		if os.clock()
 			- Started
@@ -919,14 +1266,17 @@ function AutoPlay:HackComputer(
 			break
 		end
 
-		task.wait(0.05)
+		task.wait(
+			0.05
+		)
 	end
 
 	self:StopInteraction()
 
 	if self:IsComputerDone(
 		Computer
-	) then
+	)
+	then
 		self:_SetStatus(
 			"Computer complete"
 		)
@@ -938,7 +1288,7 @@ function AutoPlay:HackComputer(
 end
 
 --------------------------------------------------
--- ALL COMPUTERS DONE
+-- ALL COMPUTERS FINISHED
 --------------------------------------------------
 
 function AutoPlay:AreComputersDone()
@@ -948,16 +1298,24 @@ function AutoPlay:AreComputersDone()
 				self._computersLeft.Value
 			)
 
-		if Value ~= nil then
-			return Value <= 0
+		if Value ~= nil
+			and Value <= 0
+		then
+			return true
 		end
 	end
+
+	local FoundComputer =
+		false
 
 	for _, Computer
 		in ipairs(
 			self:GetComputers()
 		)
 	do
+		FoundComputer =
+			true
+
 		if not self:IsComputerDone(
 			Computer
 		)
@@ -966,11 +1324,11 @@ function AutoPlay:AreComputersDone()
 		end
 	end
 
-	return true
+	return FoundComputer
 end
 
 --------------------------------------------------
--- EXIT
+-- USE EXIT
 --------------------------------------------------
 
 function AutoPlay:UseExit(
@@ -982,7 +1340,7 @@ function AutoPlay:UseExit(
 	end
 
 	self:_SetObjective(
-		"Exit Door"
+		"Exit"
 	)
 
 	local Trigger =
@@ -1003,9 +1361,9 @@ function AutoPlay:UseExit(
 		local Arrived, Reason =
 			self:MoveTo(
 				Trigger.CFrame
-				+ self.Config.ExitOffset,
+					+ self.Config.ExitOffset,
 				Token,
-				false
+				{}
 			)
 
 		if not Arrived then
@@ -1066,18 +1424,16 @@ function AutoPlay:UseExit(
 				break
 			end
 
-			if Progress >= 1 then
-				break
-			end
-
 			if os.clock()
 				- Started
-				> 15
+				>= 15
 			then
 				break
 			end
 
-			task.wait(0.05)
+			task.wait(
+				0.05
+			)
 		end
 
 		self:StopInteraction()
@@ -1107,7 +1463,7 @@ function AutoPlay:UseExit(
 		)
 	then
 		self:_SetStatus(
-			"ExitArea not found"
+			"Exit area not found"
 		)
 
 		return false
@@ -1117,51 +1473,46 @@ function AutoPlay:UseExit(
 		"Escaping"
 	)
 
-	--------------------------------------------------
-	-- MOVE INTO EXIT AREA
-	--------------------------------------------------
-
-	local Target =
-		ExitArea.CFrame
-		+ Vector3.new(
-			0,
-			1,
-			0
-		)
-
 	local Success =
 		self:MoveTo(
-			Target,
+			ExitArea.CFrame
+				+ Vector3.new(
+					0,
+					1,
+					0
+				),
 			Token,
-			true
+			{
+				IgnoreThreat =
+					true,
+			}
 		)
 
-	if Success then
-		-- Move slightly through the area so
-		-- normal Roblox touch detection sees it.
-
-		local Root =
-			self:GetRoot()
-
-		if Root then
-			Root.CFrame =
-				ExitArea.CFrame
-		end
-
-		task.wait(0.4)
-
-		self:_SetStatus(
-			"Escaped"
-		)
-
-		return true
+	if not Success then
+		return false
 	end
 
-	return false
+	local Root =
+		self:GetRoot()
+
+	if Root then
+		Root.CFrame =
+			ExitArea.CFrame
+	end
+
+	task.wait(
+		0.4
+	)
+
+	self:_SetStatus(
+		"Escaped"
+	)
+
+	return true
 end
 
 --------------------------------------------------
--- MAIN LOOP
+-- LOOP
 --------------------------------------------------
 
 function AutoPlay:_Run(
@@ -1171,14 +1522,20 @@ function AutoPlay:_Run(
 		"Starting"
 	)
 
-	self:_SetProgress(0)
+	self:_SetObjective(
+		"None"
+	)
+
+	self:_SetProgress(
+		0
+	)
 
 	while self.Config.Enabled
 		and Token
 			== self._runToken
 	do
 		--------------------------------------------------
-		-- DO NOT AUTOPLAY AS BEAST
+		-- DON'T RUN SURVIVOR ROUTE AS BEAST
 		--------------------------------------------------
 
 		if self:IsBeast(
@@ -1186,16 +1543,18 @@ function AutoPlay:_Run(
 		)
 		then
 			self:_SetStatus(
-				"Local player is Beast"
+				"Waiting"
 			)
 
-			task.wait(1)
+			task.wait(
+				1
+			)
 
 			continue
 		end
 
 		--------------------------------------------------
-		-- THREAT
+		-- BEAST NEARBY
 		--------------------------------------------------
 
 		if self:IsBeastClose() then
@@ -1203,7 +1562,9 @@ function AutoPlay:_Run(
 				Token
 			)
 
-			task.wait(0.1)
+			task.wait(
+				0.1
+			)
 
 			continue
 		end
@@ -1213,20 +1574,34 @@ function AutoPlay:_Run(
 		--------------------------------------------------
 
 		if not self:AreComputersDone() then
-			local Computer =
-				self:GetNearestComputer()
+			local Computer,
+				Trigger =
+				self:GetNearestComputerTarget()
 
-			if Computer then
+			if Computer
+				and Trigger
+			then
 				self:HackComputer(
 					Computer,
+					Trigger,
 					Token
 				)
 			else
-				self:_SetStatus(
-					"Searching for computer"
+				--------------------------------------------------
+				-- ALL CURRENT COMPUTER SPOTS TAKEN
+				--------------------------------------------------
+
+				self:_SetObjective(
+					"Computer"
 				)
 
-				task.wait(0.5)
+				self:_SetStatus(
+					"Waiting for free computer spot"
+				)
+
+				task.wait(
+					0.4
+				)
 			end
 
 			continue
@@ -1244,7 +1619,9 @@ function AutoPlay:_Run(
 				"Searching for exit"
 			)
 
-			task.wait(0.5)
+			task.wait(
+				0.5
+			)
 
 			continue
 		end
@@ -1262,14 +1639,18 @@ function AutoPlay:_Run(
 			break
 		end
 
-		task.wait(0.25)
+		task.wait(
+			0.25
+		)
 	end
 
 	self:CancelTween()
 
 	self:StopInteraction()
 
-	self:_SetProgress(0)
+	self:_SetProgress(
+		0
+	)
 end
 
 --------------------------------------------------
@@ -1353,7 +1734,7 @@ function AutoPlay:Init()
 end
 
 --------------------------------------------------
--- CREATE UI
+-- UI
 --------------------------------------------------
 
 function AutoPlay:CreateUI(
@@ -1372,11 +1753,12 @@ function AutoPlay:CreateUI(
 		})
 
 	--------------------------------------------------
-	-- PROGRESS BAR
+	-- PROGRESS
 	--------------------------------------------------
 
 	Section:AddCustom({
-		Height = 48,
+		Height =
+			48,
 
 		Builder =
 			function(Container)
@@ -1452,18 +1834,18 @@ function AutoPlay:CreateUI(
 				Bar.Parent =
 					Container
 
-				local Corner =
+				local BarCorner =
 					Instance.new(
 						"UICorner"
 					)
 
-				Corner.CornerRadius =
+				BarCorner.CornerRadius =
 					UDim.new(
 						0,
 						5
 					)
 
-				Corner.Parent =
+				BarCorner.Parent =
 					Bar
 
 				local Fill =
@@ -1534,6 +1916,9 @@ function AutoPlay:CreateUI(
 				Percent.Font =
 					Enum.Font.GothamBold
 
+				Percent.ZIndex =
+					2
+
 				Percent.Parent =
 					Bar
 
@@ -1546,7 +1931,7 @@ function AutoPlay:CreateUI(
 	})
 
 	--------------------------------------------------
-	-- AUTO PLAY
+	-- AUTOPLAY
 	--------------------------------------------------
 
 	Section:AddToggle({
@@ -1592,7 +1977,7 @@ function AutoPlay:CreateUI(
 	})
 
 	--------------------------------------------------
-	-- BEAST RANGE
+	-- BEAST DISTANCE
 	--------------------------------------------------
 
 	Section:AddSlider({
@@ -1651,24 +2036,6 @@ function AutoPlay:CreateUI(
 					Value
 			end,
 	})
-
-	--------------------------------------------------
-	-- SKILL CHECK
-	--------------------------------------------------
-
-	Section:AddToggle({
-		Name =
-			"Admin Skill Check",
-
-		Default =
-			self.Config.AutoSkillCheck,
-
-		Callback =
-			function(Value)
-				self.Config.AutoSkillCheck =
-					Value
-			end,
-	})
 end
 
 --------------------------------------------------
@@ -1691,6 +2058,10 @@ function AutoPlay:Stop()
 
 	self:_SetObjective(
 		"None"
+	)
+
+	self:_SetProgress(
+		0
 	)
 end
 
