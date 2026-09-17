@@ -25,7 +25,7 @@ local AutoPlay = {}
 --------------------------------------------------
 
 AutoPlay.Name = "AutoPlay"
-AutoPlay.Version = "v5"
+AutoPlay.Version = "v7"
 
 print(
 	("[FleeTheFacility] %s %s loaded"):format(
@@ -156,6 +156,10 @@ AutoPlay._gameActiveConnection = nil
 
 AutoPlay._gameActiveAddedConnection = nil
 
+AutoPlay._gameStatusConnection = nil
+
+AutoPlay._gameStatusAddedConnection = nil
+
 --------------------------------------------------
 -- GAME ACTIVE
 --------------------------------------------------
@@ -215,7 +219,14 @@ function AutoPlay:_BindGameActiveFlag()
 						"Value"
 					):Connect(
 						function()
-							if self:IsGameMarkedActive()
+							--------------------------------------------------
+							-- LIVE GAME STATE CHANGE
+							--
+							-- TRUE  = GAME ACTIVE, AUTOPLAY MAY RUN
+							-- FALSE = GAME INACTIVE, DISABLE IMMEDIATELY
+							--------------------------------------------------
+
+							if not self:IsGameMarkedActive()
 								and self.Config.Enabled
 							then
 								self:SetEnabled(
@@ -279,6 +290,130 @@ function AutoPlay:_BindGameActiveFlag()
 end
 
 --------------------------------------------------
+-- GAME STATUS
+--------------------------------------------------
+
+function AutoPlay:IsBeastLeftGameOver()
+	local Status =
+		ReplicatedStorage:FindFirstChild(
+			"GameStatus"
+		)
+
+	if not Status then
+		return false
+	end
+
+	local Success,
+		Value =
+		pcall(
+			function()
+				return Status.Value
+			end
+		)
+
+	return Success
+		and tostring(
+			Value
+		) == "GAME OVER - BEAST LEFT"
+end
+
+function AutoPlay:_BindGameStatus()
+	if self._gameStatusConnection then
+		self._gameStatusConnection:Disconnect()
+
+		self._gameStatusConnection =
+			nil
+	end
+
+	local function BindStatus(
+		Status
+	)
+		if not Status
+			or Status.Name
+				~= "GameStatus"
+		then
+			return
+		end
+
+		if self._gameStatusConnection then
+			self._gameStatusConnection:Disconnect()
+
+			self._gameStatusConnection =
+				nil
+		end
+
+		local Success,
+			Connection =
+			pcall(
+				function()
+					return Status:GetPropertyChangedSignal(
+						"Value"
+					):Connect(
+						function()
+							if self:IsBeastLeftGameOver()
+								and self.Config.Enabled
+							then
+								self:SetEnabled(
+									false
+								)
+
+								self:_SetStatus(
+									"Disabled - beast left"
+								)
+							end
+						end
+					)
+				end
+			)
+
+		if Success then
+			self._gameStatusConnection =
+				Connection
+		end
+
+		if self:IsBeastLeftGameOver()
+			and self.Config.Enabled
+		then
+			self:SetEnabled(
+				false
+			)
+
+			self:_SetStatus(
+				"Disabled - beast left"
+			)
+		end
+	end
+
+	BindStatus(
+		ReplicatedStorage:FindFirstChild(
+			"GameStatus"
+		)
+	)
+
+	if self._gameStatusAddedConnection then
+		self._gameStatusAddedConnection:Disconnect()
+
+		self._gameStatusAddedConnection =
+			nil
+	end
+
+	self._gameStatusAddedConnection =
+		ReplicatedStorage.ChildAdded:Connect(
+			function(
+				Child
+			)
+				if Child.Name
+					== "GameStatus"
+				then
+					BindStatus(
+						Child
+					)
+				end
+			end
+		)
+end
+
+--------------------------------------------------
 -- INIT
 --------------------------------------------------
 
@@ -299,6 +434,8 @@ function AutoPlay:Init(
 	self.Navigator = Navigator
 
 	self:_BindGameActiveFlag()
+
+	self:_BindGameStatus()
 
 	print(
 		("[FleeTheFacility] %s %s initialized"):format(
@@ -2674,6 +2811,22 @@ function AutoPlay:_Run(
 			== self._runToken
 	do
 		--------------------------------------------------
+		-- GAME STATUS SAFETY
+		--------------------------------------------------
+
+		if self:IsBeastLeftGameOver() then
+			self:SetEnabled(
+				false
+			)
+
+			self:_SetStatus(
+				"Disabled - beast left"
+			)
+
+			break
+		end
+
+		--------------------------------------------------
 		-- GAME ACTIVE SAFETY
 		--------------------------------------------------
 
@@ -2846,6 +2999,30 @@ function AutoPlay:SetEnabled(
 )
 	Enabled =
 		Enabled == true
+
+	if Enabled
+		and self:IsBeastLeftGameOver()
+	then
+		if self.Config.Enabled then
+			self:SetEnabled(
+				false
+			)
+		end
+
+		self:_SetStatus(
+			"Disabled - beast left"
+		)
+
+		self:_SetObjective(
+			"None"
+		)
+
+		self:_SetProgress(
+			0
+		)
+
+		return
+	end
 
 	if Enabled
 		and not self:IsGameMarkedActive()
@@ -3268,6 +3445,20 @@ function AutoPlay:Destroy()
 		self._gameActiveAddedConnection:Disconnect()
 
 		self._gameActiveAddedConnection =
+			nil
+	end
+
+	if self._gameStatusConnection then
+		self._gameStatusConnection:Disconnect()
+
+		self._gameStatusConnection =
+			nil
+	end
+
+	if self._gameStatusAddedConnection then
+		self._gameStatusAddedConnection:Disconnect()
+
+		self._gameStatusAddedConnection =
 			nil
 	end
 
