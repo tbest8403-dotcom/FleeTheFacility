@@ -25,7 +25,7 @@ local AutoPlay = {}
 --------------------------------------------------
 
 AutoPlay.Name = "AutoPlay"
-AutoPlay.Version = "v10"
+AutoPlay.Version = "v11"
 
 print(
 	("[FleeTheFacility] %s %s loaded"):format(
@@ -105,9 +105,9 @@ AutoPlay.Config = {
 	-- BEAST
 	--------------------------------------------------
 
-	BeastAvoidDistance = 15,
+	BeastAvoidDistance = 40,
 
-	BeastResumeDistance = 22,
+	BeastResumeDistance = 47,
 
 	-- Temporary holding position while the Beast is too close.
 	-- Kept far above the saved spot to avoid FallenPartsDestroyHeight.
@@ -137,6 +137,10 @@ AutoPlay._runToken = 0
 AutoPlay._travelGeneration = 0
 
 AutoPlay._currentTrigger = nil
+
+AutoPlay._isHiding = false
+
+AutoPlay._hideHoldConnection = nil
 
 AutoPlay._statusLabel = nil
 
@@ -203,6 +207,8 @@ function AutoPlay:_ForceResetForHammer(
 	--------------------------------------------------
 
 	self._runToken += 1
+
+	self:StopBeastHold()
 
 	self:CancelTravel()
 
@@ -385,6 +391,8 @@ function AutoPlay:_PauseForInactiveGame()
 	--------------------------------------------------
 
 	self._runToken += 1
+
+	self:StopBeastHold()
 
 	self:CancelTravel()
 
@@ -1135,6 +1143,22 @@ function AutoPlay:IsBeastClose()
 end
 
 --------------------------------------------------
+-- BEAST HOLD CONNECTION
+--------------------------------------------------
+
+function AutoPlay:StopBeastHold()
+	self._isHiding =
+		false
+
+	if self._hideHoldConnection then
+		self._hideHoldConnection:Disconnect()
+
+		self._hideHoldConnection =
+			nil
+	end
+end
+
+--------------------------------------------------
 -- CANCEL MOVEMENT
 --------------------------------------------------
 
@@ -1182,6 +1206,11 @@ function AutoPlay:MoveSegment(
 	Rotation
 )
 	while true do
+		if self._isHiding then
+			return false,
+				"Hiding"
+		end
+
 		if not self.Config.Enabled
 			or Token
 				~= self._runToken
@@ -1242,6 +1271,11 @@ function AutoPlay:MoveSegment(
 		--------------------------------------------------
 		-- RECHECK AFTER HEARTBEAT
 		--------------------------------------------------
+
+		if self._isHiding then
+			return false,
+				"Hiding"
+		end
 
 		if not self.Config.Enabled
 			or Token
@@ -2253,12 +2287,21 @@ function AutoPlay:HideFromBeast(
 		return false
 	end
 
+	--------------------------------------------------
+	-- HARD-PAUSE AUTOPLAY TRAVEL / INTERACTION.
+	--------------------------------------------------
+
+	self:StopBeastHold()
+
+	self._isHiding =
+		true
+
 	self:CancelTravel()
 
 	self:LeaveTrigger()
 
 	--------------------------------------------------
-	-- SAVE THE EXACT SPOT WE WERE AT BEFORE HIDING.
+	-- SAVE EXACT RETURN SPOT.
 	--------------------------------------------------
 
 	self:CaptureSafeSpot()
@@ -2276,11 +2319,7 @@ function AutoPlay:HideFromBeast(
 		Humanoid.AutoRotate
 
 	--------------------------------------------------
-	-- FAR-AWAY HOLDING POSITION
-	--
-	-- DO NOT USE THE CURRENT PLAYER POSITION FOR
-	-- BEAST DISTANCE AFTER TELEPORTING. THAT WOULD
-	-- INSTANTLY LOOK "SAFE" BECAUSE WE ARE FAR AWAY.
+	-- FAR-AWAY HOLDING POSITION.
 	--------------------------------------------------
 
 	local HoldingCFrame =
@@ -2317,11 +2356,11 @@ function AutoPlay:HideFromBeast(
 	end
 
 	--------------------------------------------------
-	-- TELEPORT FAR AWAY AND HOLD THERE.
+	-- DO NOT ANCHOR.
+	--
+	-- HEARTBEAT RE-APPLIES THE HOLD CFRAME EVERY
+	-- PHYSICS FRAME UNTIL THE BEAST LEAVES RANGE.
 	--------------------------------------------------
-
-	Root.Anchored =
-		true
 
 	Humanoid.AutoRotate =
 		false
@@ -2339,10 +2378,28 @@ function AutoPlay:HideFromBeast(
 		"Beast nearby - holding"
 	)
 
+	self._hideHoldConnection =
+		RunService.Heartbeat:Connect(
+			function()
+				if not self._isHiding
+					or not Root.Parent
+				then
+					return
+				end
+
+				Root.CFrame =
+					HoldingCFrame
+
+				Root.AssemblyLinearVelocity =
+					Vector3.zero
+
+				Root.AssemblyAngularVelocity =
+					Vector3.zero
+			end
+		)
+
 	--------------------------------------------------
-	-- STAY ANCHORED FAR AWAY UNTIL THE BEAST HAS
-	-- ACTUALLY LEFT THE RESUME RANGE OF OUR SAVED
-	-- ORIGINAL POSITION.
+	-- CHECK DISTANCE FROM THE ORIGINAL SPOT.
 	--------------------------------------------------
 
 	while self.Config.Enabled
@@ -2352,33 +2409,38 @@ function AutoPlay:HideFromBeast(
 			< self.Config.BeastResumeDistance
 	do
 		if not Root.Parent then
-			return false
+			break
 		end
-
-		Root.Anchored =
-			true
-
-		Root.AssemblyLinearVelocity =
-			Vector3.zero
-
-		Root.AssemblyAngularVelocity =
-			Vector3.zero
-
-		Root.CFrame =
-			HoldingCFrame
 
 		task.wait(
 			0.1
 		)
 	end
 
+	--------------------------------------------------
+	-- STOP HOLDING BEFORE ANY RETURN / CLEANUP.
+	--------------------------------------------------
+
+	self:StopBeastHold()
+
 	if not Root.Parent then
 		return false
 	end
 
 	--------------------------------------------------
-	-- ALWAYS RESTORE THE EXACT SAVED SPOT BEFORE
-	-- RELEASING ANCHOR STATE.
+	-- IF AN OUTSIDE STATE CHANGE CANCELLED THIS RUN,
+	-- ITS OWN SAFE-RESTORE / RESET LOGIC TAKES OVER.
+	--------------------------------------------------
+
+	if not self.Config.Enabled
+		or Token
+			~= self._runToken
+	then
+		return false
+	end
+
+	--------------------------------------------------
+	-- RETURN TO THE EXACT PRE-HIDE POSITION.
 	--------------------------------------------------
 
 	Root.CFrame =
@@ -2395,13 +2457,6 @@ function AutoPlay:HideFromBeast(
 
 	Humanoid.AutoRotate =
 		OriginalAutoRotate
-
-	if not self.Config.Enabled
-		or Token
-			~= self._runToken
-	then
-		return false
-	end
 
 	self:_SetStatus(
 		"Returning"
@@ -3354,6 +3409,8 @@ function AutoPlay:SetEnabled(
 	self._runToken += 1
 
 	if not Enabled then
+		self:StopBeastHold()
+
 		self:CancelTravel()
 
 		self:LeaveTrigger()
@@ -3654,7 +3711,7 @@ function AutoPlay:CreateUI(
 			50,
 
 		Default =
-			15,
+			40,
 
 		Increment =
 			1,
@@ -3746,6 +3803,8 @@ end
 
 function AutoPlay:Destroy()
 	self:Stop()
+
+	self:StopBeastHold()
 
 	if self._gameActiveConnection then
 		self._gameActiveConnection:Disconnect()
