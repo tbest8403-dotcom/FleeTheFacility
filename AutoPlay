@@ -25,7 +25,7 @@ local AutoPlay = {}
 --------------------------------------------------
 
 AutoPlay.Name = "AutoPlay"
-AutoPlay.Version = "v9"
+AutoPlay.Version = "v10"
 
 print(
 	("[FleeTheFacility] %s %s loaded"):format(
@@ -163,6 +163,212 @@ AutoPlay._gameActiveAddedConnection = nil
 AutoPlay._gameStatusConnection = nil
 
 AutoPlay._gameStatusAddedConnection = nil
+
+AutoPlay._characterAddedConnection = nil
+
+AutoPlay._hammerAddedConnection = nil
+
+--------------------------------------------------
+-- HAMMER RESET
+--------------------------------------------------
+
+function AutoPlay:_IsHammer(
+	Object
+)
+	return Object
+		and Object.Name == "Hammer"
+		and Object:IsA(
+			"Model"
+		)
+end
+
+function AutoPlay:_ForceResetForHammer(
+	Character
+)
+	if not self.Config.Enabled then
+		return
+	end
+
+	if not Character
+		or Character
+			~= LocalPlayer.Character
+	then
+		return
+	end
+
+	--------------------------------------------------
+	-- STOP THE OLD AUTOPLAY RUN, BUT KEEP THE
+	-- AUTOPLAY TOGGLE ENABLED SO IT CAN RESUME
+	-- AFTER THE NEW CHARACTER SPAWNS.
+	--------------------------------------------------
+
+	self._runToken += 1
+
+	self:CancelTravel()
+
+	self:LeaveTrigger()
+
+	self:_SetStatus(
+		"Hammer detected - resetting"
+	)
+
+	self:_SetObjective(
+		"None"
+	)
+
+	self:_SetProgress(
+		0
+	)
+
+	local Humanoid =
+		Character:FindFirstChildOfClass(
+			"Humanoid"
+		)
+
+	if Humanoid
+		and Humanoid.Health > 0
+	then
+		Humanoid.Health =
+			0
+
+		return
+	end
+
+	--------------------------------------------------
+	-- FALLBACK IF THE HUMANOID IS NOT AVAILABLE.
+	--------------------------------------------------
+
+	pcall(
+		function()
+			Character:BreakJoints()
+		end
+	)
+end
+
+function AutoPlay:_CheckCharacterForHammer(
+	Character
+)
+	if not self.Config.Enabled
+		or not Character
+	then
+		return false
+	end
+
+	for _,
+		Child
+		in ipairs(
+			Character:GetChildren()
+		)
+	do
+		if self:_IsHammer(
+			Child
+		)
+		then
+			self:_ForceResetForHammer(
+				Character
+			)
+
+			return true
+		end
+	end
+
+	return false
+end
+
+function AutoPlay:_BindCharacterHammerWatcher(
+	Character
+)
+	if self._hammerAddedConnection then
+		self._hammerAddedConnection:Disconnect()
+
+		self._hammerAddedConnection =
+			nil
+	end
+
+	if not Character then
+		return
+	end
+
+	self._hammerAddedConnection =
+		Character.ChildAdded:Connect(
+			function(
+				Child
+			)
+				if self.Config.Enabled
+					and self:_IsHammer(
+						Child
+					)
+				then
+					self:_ForceResetForHammer(
+						Character
+					)
+				end
+			end
+		)
+
+	self:_CheckCharacterForHammer(
+		Character
+	)
+end
+
+function AutoPlay:_BindCharacterWatcher()
+	if self._characterAddedConnection then
+		self._characterAddedConnection:Disconnect()
+
+		self._characterAddedConnection =
+			nil
+	end
+
+	self:_BindCharacterHammerWatcher(
+		LocalPlayer.Character
+	)
+
+	self._characterAddedConnection =
+		LocalPlayer.CharacterAdded:Connect(
+			function(
+				Character
+			)
+				self:_BindCharacterHammerWatcher(
+					Character
+				)
+
+				--------------------------------------------------
+				-- IF AUTOPLAY WAS STILL ENABLED THROUGH THE
+				-- RESET, RESUME ON THE NEW CHARACTER.
+				--------------------------------------------------
+
+				if self.Config.Enabled then
+					task.defer(
+						function()
+							if not self.Config.Enabled
+								or Character
+									~= LocalPlayer.Character
+							then
+								return
+							end
+
+							if self:_CheckCharacterForHammer(
+								Character
+							)
+							then
+								return
+							end
+
+							if self:IsGameMarkedActive()
+								and not self:IsBeastLeftGameOver()
+							then
+								self:_StartForActiveGame()
+							else
+								self:_SetStatus(
+									"Waiting for game"
+								)
+							end
+						end
+					)
+				end
+			end
+		)
+end
 
 --------------------------------------------------
 -- GAME RUN STATE
@@ -519,6 +725,8 @@ function AutoPlay:Init(
 	self:_BindGameActiveFlag()
 
 	self:_BindGameStatus()
+
+	self:_BindCharacterWatcher()
 
 	print(
 		("[FleeTheFacility] %s %s initialized"):format(
@@ -3176,6 +3384,12 @@ function AutoPlay:SetEnabled(
 
 	self:CaptureSafeSpot()
 
+	if self:_CheckCharacterForHammer(
+		self:GetCharacter()
+	) then
+		return
+	end
+
 	print(
 		("[FleeTheFacility] %s %s enabled"):format(
 			self.Name,
@@ -3558,6 +3772,20 @@ function AutoPlay:Destroy()
 		self._gameStatusAddedConnection:Disconnect()
 
 		self._gameStatusAddedConnection =
+			nil
+	end
+
+	if self._hammerAddedConnection then
+		self._hammerAddedConnection:Disconnect()
+
+		self._hammerAddedConnection =
+			nil
+	end
+
+	if self._characterAddedConnection then
+		self._characterAddedConnection:Disconnect()
+
+		self._characterAddedConnection =
 			nil
 	end
 
