@@ -25,7 +25,7 @@ local AutoPlay = {}
 --------------------------------------------------
 
 AutoPlay.Name = "AutoPlay"
-AutoPlay.Version = "v1.3.1"
+AutoPlay.Version = "v3"
 
 print(
 	("[FleeTheFacility] %s %s loaded"):format(
@@ -144,6 +144,140 @@ AutoPlay._progressLabel = nil
 
 AutoPlay._lastSkillGoal = nil
 
+AutoPlay._safeCharacter = nil
+
+AutoPlay._safeReturnCFrame = nil
+
+AutoPlay._safeAnchored = nil
+
+AutoPlay._safeAutoRotate = nil
+
+AutoPlay._gameActiveConnection = nil
+
+AutoPlay._gameActiveAddedConnection = nil
+
+--------------------------------------------------
+-- GAME ACTIVE
+--------------------------------------------------
+
+function AutoPlay:IsGameMarkedActive()
+	local Flag =
+		ReplicatedStorage:FindFirstChild(
+			"IsGameActive"
+		)
+
+	if not Flag then
+		return false
+	end
+
+	local Success,
+		Value =
+		pcall(
+			function()
+				return Flag.Value
+			end
+		)
+
+	return Success
+		and Value == true
+end
+
+function AutoPlay:_BindGameActiveFlag()
+	if self._gameActiveConnection then
+		self._gameActiveConnection:Disconnect()
+
+		self._gameActiveConnection =
+			nil
+	end
+
+	local function BindFlag(
+		Flag
+	)
+		if not Flag
+			or Flag.Name
+				~= "IsGameActive"
+		then
+			return
+		end
+
+		if self._gameActiveConnection then
+			self._gameActiveConnection:Disconnect()
+
+			self._gameActiveConnection =
+				nil
+		end
+
+		local Success,
+			Connection =
+			pcall(
+				function()
+					return Flag:GetPropertyChangedSignal(
+						"Value"
+					):Connect(
+						function()
+							if self:IsGameMarkedActive()
+								and self.Config.Enabled
+							then
+								self:SetEnabled(
+									false
+								)
+
+								self:_SetStatus(
+									"Disabled - game active"
+								)
+							end
+						end
+					)
+				end
+			)
+
+		if Success then
+			self._gameActiveConnection =
+				Connection
+		end
+
+		if self:IsGameMarkedActive()
+			and self.Config.Enabled
+		then
+			self:SetEnabled(
+				false
+			)
+
+			self:_SetStatus(
+				"Disabled - game active"
+			)
+		end
+	end
+
+	BindFlag(
+		ReplicatedStorage:FindFirstChild(
+			"IsGameActive"
+		)
+	)
+
+	if self._gameActiveAddedConnection then
+		self._gameActiveAddedConnection:Disconnect()
+
+		self._gameActiveAddedConnection =
+			nil
+	end
+
+	self._gameActiveAddedConnection =
+		ReplicatedStorage.ChildAdded:Connect(
+			function(
+				Child
+			)
+				if Child.Name
+					== "IsGameActive"
+				then
+					BindFlag(
+						Child
+					)
+				end
+			end
+		)
+end
+
 --------------------------------------------------
 -- INIT
 --------------------------------------------------
@@ -163,6 +297,8 @@ function AutoPlay:Init(
 	--------------------------------------------------
 
 	self.Navigator = Navigator
+
+	self:_BindGameActiveFlag()
 
 	print(
 		("[FleeTheFacility] %s %s initialized"):format(
@@ -259,6 +395,104 @@ function AutoPlay:GetRoot()
 	return Character:FindFirstChild(
 		"HumanoidRootPart"
 	)
+end
+
+--------------------------------------------------
+-- SAFE RETURN SPOT
+--------------------------------------------------
+
+function AutoPlay:CaptureSafeSpot()
+	local Character =
+		self:GetCharacter()
+
+	local Root =
+		self:GetRoot()
+
+	local Humanoid =
+		self:GetHumanoid()
+
+	if not Character
+		or not Root
+		or not Humanoid
+	then
+		return false
+	end
+
+	self._safeCharacter =
+		Character
+
+	self._safeReturnCFrame =
+		Root.CFrame
+
+	self._safeAnchored =
+		Root.Anchored
+
+	self._safeAutoRotate =
+		Humanoid.AutoRotate
+
+	return true
+end
+
+function AutoPlay:RestoreSafeSpot()
+	local Character =
+		self:GetCharacter()
+
+	local Root =
+		self:GetRoot()
+
+	local Humanoid =
+		self:GetHumanoid()
+
+	if not Character
+		or not Root
+		or not Humanoid
+	then
+		return false
+	end
+
+	if self._safeCharacter
+		~= Character
+		or not self._safeReturnCFrame
+	then
+		return false
+	end
+
+	local SafeAnchored =
+		self._safeAnchored
+
+	local SafeAutoRotate =
+		self._safeAutoRotate
+
+	Root.Anchored = true
+
+	Humanoid.AutoRotate = false
+
+	Root.AssemblyLinearVelocity =
+		Vector3.zero
+
+	Root.AssemblyAngularVelocity =
+		Vector3.zero
+
+	Root.CFrame =
+		self._safeReturnCFrame
+
+	Root.AssemblyLinearVelocity =
+		Vector3.zero
+
+	Root.AssemblyAngularVelocity =
+		Vector3.zero
+
+	Root.Anchored =
+		SafeAnchored == true
+
+	if SafeAutoRotate == nil then
+		Humanoid.AutoRotate = true
+	else
+		Humanoid.AutoRotate =
+			SafeAutoRotate
+	end
+
+	return true
 end
 
 --------------------------------------------------
@@ -578,6 +812,32 @@ function AutoPlay:MoveSegment(
 			RunService.Heartbeat:Wait()
 
 		--------------------------------------------------
+		-- RECHECK AFTER HEARTBEAT
+		--------------------------------------------------
+
+		if not self.Config.Enabled
+			or Token
+				~= self._runToken
+		then
+			return false,
+				"Stopped"
+		end
+
+		if TravelGeneration
+			~= self._travelGeneration
+		then
+			return false,
+				"Cancelled"
+		end
+
+		if not IgnoreBeast
+			and self:IsBeastClose()
+		then
+			return false,
+				"Threat"
+		end
+
+		--------------------------------------------------
 		-- READ WALKSPEED LIVE
 		--------------------------------------------------
 
@@ -668,6 +928,12 @@ function AutoPlay:SmoothTravelTo(
 	end
 
 	--------------------------------------------------
+	-- REMEMBER THE LAST SAFE SURFACE POSITION
+	--------------------------------------------------
+
+	self:CaptureSafeSpot()
+
+	--------------------------------------------------
 	-- CANCEL OLD TRAVEL
 	--------------------------------------------------
 
@@ -752,6 +1018,8 @@ function AutoPlay:SmoothTravelTo(
 	if not Success then
 		Restore()
 
+		self:RestoreSafeSpot()
+
 		return false,
 			Reason
 	end
@@ -785,6 +1053,8 @@ function AutoPlay:SmoothTravelTo(
 	if not Success then
 		Restore()
 
+		self:RestoreSafeSpot()
+
 		return false,
 			Reason
 	end
@@ -810,9 +1080,13 @@ function AutoPlay:SmoothTravelTo(
 	Restore()
 
 	if not Success then
+		self:RestoreSafeSpot()
+
 		return false,
 			Reason
 	end
+
+	self:CaptureSafeSpot()
 
 	task.wait(
 		self.Config.TriggerSettleTime
@@ -1510,6 +1784,8 @@ function AutoPlay:HideFromBeast(
 
 	self:LeaveTrigger()
 
+	self:CaptureSafeSpot()
+
 	local ReturnCFrame =
 		Root.CFrame
 
@@ -1579,6 +1855,15 @@ function AutoPlay:HideFromBeast(
 		or Token
 			~= self._runToken
 	then
+		Root.CFrame =
+			ReturnCFrame
+
+		Root.AssemblyLinearVelocity =
+			Vector3.zero
+
+		Root.AssemblyAngularVelocity =
+			Vector3.zero
+
 		Root.Anchored =
 			OriginalAnchored
 
@@ -1614,6 +1899,8 @@ function AutoPlay:HideFromBeast(
 
 	Humanoid.AutoRotate =
 		OriginalAutoRotate
+
+	self:CaptureSafeSpot()
 
 	self:LeaveTrigger()
 
@@ -2211,9 +2498,16 @@ function AutoPlay:UseExit(
 			return false
 		end
 
-		self:_SetProgress(
+		local Progress =
 			self:GetActionProgress()
+
+		self:_SetProgress(
+			Progress
 		)
+
+		if Progress >= 0.999 then
+			break
+		end
 
 		local ActionSign =
 			Trigger:FindFirstChild(
@@ -2332,6 +2626,22 @@ function AutoPlay:_Run(
 		and Token
 			== self._runToken
 	do
+		--------------------------------------------------
+		-- GAME ACTIVE SAFETY
+		--------------------------------------------------
+
+		if self:IsGameMarkedActive() then
+			self:SetEnabled(
+				false
+			)
+
+			self:_SetStatus(
+				"Disabled - game active"
+			)
+
+			break
+		end
+
 		--------------------------------------------------
 		-- SURVIVOR ONLY
 		--------------------------------------------------
@@ -2490,6 +2800,30 @@ function AutoPlay:SetEnabled(
 	Enabled =
 		Enabled == true
 
+	if Enabled
+		and self:IsGameMarkedActive()
+	then
+		if self.Config.Enabled then
+			self:SetEnabled(
+				false
+			)
+		end
+
+		self:_SetStatus(
+			"Disabled - game active"
+		)
+
+		self:_SetObjective(
+			"None"
+		)
+
+		self:_SetProgress(
+			0
+		)
+
+		return
+	end
+
 	if self.Config.Enabled
 		== Enabled
 	then
@@ -2508,6 +2842,8 @@ function AutoPlay:SetEnabled(
 		self:CancelTravel()
 
 		self:LeaveTrigger()
+
+		self:RestoreSafeSpot()
 
 		self:_SetStatus(
 			"Disabled"
@@ -2530,6 +2866,8 @@ function AutoPlay:SetEnabled(
 
 		return
 	end
+
+	self:CaptureSafeSpot()
 
 	print(
 		("[FleeTheFacility] %s %s enabled"):format(
@@ -2871,6 +3209,20 @@ end
 
 function AutoPlay:Destroy()
 	self:Stop()
+
+	if self._gameActiveConnection then
+		self._gameActiveConnection:Disconnect()
+
+		self._gameActiveConnection =
+			nil
+	end
+
+	if self._gameActiveAddedConnection then
+		self._gameActiveAddedConnection:Disconnect()
+
+		self._gameActiveAddedConnection =
+			nil
+	end
 
 	print(
 		("[FleeTheFacility] %s %s destroyed"):format(
