@@ -1,0 +1,1292 @@
+local Players =
+	game:GetService("Players")
+
+local PathfindingService =
+	game:GetService("PathfindingService")
+
+local RunService =
+	game:GetService("RunService")
+
+local Workspace =
+	game:GetService("Workspace")
+
+local LocalPlayer =
+	Players.LocalPlayer
+
+local Navigator = {}
+
+--------------------------------------------------
+-- CONFIG
+--------------------------------------------------
+
+Navigator.Config = {
+	--------------------------------------------------
+	-- AGENT CALCULATION
+	--------------------------------------------------
+
+	RadiusPadding = 0.55,
+
+	HeightPadding = 0.35,
+
+	MinAgentRadius = 1.25,
+
+	MaxAgentRadius = 3.5,
+
+	MinAgentHeight = 4,
+
+	MaxAgentHeight = 9,
+
+	--------------------------------------------------
+	-- PATH
+	--------------------------------------------------
+
+	MinWaypointSpacing = 3.5,
+
+	MaxWaypointSpacing = 6,
+
+	WaypointReachDistance = 2.25,
+
+	FinalReachDistance = 3,
+
+	WaypointTimeout = 6,
+
+	MaxRepaths = 8,
+
+	--------------------------------------------------
+	-- JUMPING
+	--------------------------------------------------
+
+	ForceJumpHeightDifference = 1.35,
+
+	JumpRetryDelay = 0.3,
+
+	MaxJumpRetries = 2,
+
+	--------------------------------------------------
+	-- TARGET GROUNDING
+	--------------------------------------------------
+
+	GroundProbeHeight = 12,
+
+	GroundProbeDepth = 80,
+
+	--------------------------------------------------
+	-- WALL CLEARANCE
+	--------------------------------------------------
+
+	CorridorHeight = 4,
+
+	CorridorExtraPadding = 0.2,
+
+	--------------------------------------------------
+	-- SMOOTHING
+	--------------------------------------------------
+
+	SmoothWaypoints = true,
+
+	MaxSmoothLookAhead = 5,
+}
+
+--------------------------------------------------
+-- STATE
+--------------------------------------------------
+
+Navigator._moveGeneration = 0
+
+Navigator._agentSettings = nil
+
+Navigator._character =
+	nil
+
+--------------------------------------------------
+-- CHARACTER
+--------------------------------------------------
+
+function Navigator:GetCharacter()
+	return LocalPlayer.Character
+end
+
+function Navigator:GetHumanoid()
+	local Character =
+		self:GetCharacter()
+
+	if not Character then
+		return nil
+	end
+
+	return Character:FindFirstChildOfClass(
+		"Humanoid"
+	)
+end
+
+function Navigator:GetRoot()
+	local Character =
+		self:GetCharacter()
+
+	if not Character then
+		return nil
+	end
+
+	return Character:FindFirstChild(
+		"HumanoidRootPart"
+	)
+end
+
+--------------------------------------------------
+-- BODY PART CHECK
+--------------------------------------------------
+
+function Navigator:IsAccessoryPart(
+	Part
+)
+	local Parent =
+		Part.Parent
+
+	while Parent do
+		if Parent:IsA(
+			"Accessory"
+		)
+			or Parent:IsA(
+				"Tool"
+			)
+		then
+			return true
+		end
+
+		Parent =
+			Parent.Parent
+	end
+
+	return false
+end
+
+--------------------------------------------------
+-- BODY HEIGHT
+--------------------------------------------------
+
+function Navigator:GetBodyHeight()
+	local Character =
+		self:GetCharacter()
+
+	local Root =
+		self:GetRoot()
+
+	if not Character
+		or not Root
+	then
+		return 5
+	end
+
+	local MinimumY =
+		math.huge
+
+	local MaximumY =
+		-math.huge
+
+	for _, Object
+		in ipairs(
+			Character:GetDescendants()
+		)
+	do
+		if Object:IsA(
+			"BasePart"
+		)
+			and not self:IsAccessoryPart(
+				Object
+			)
+		then
+			--------------------------------------------------
+			-- GET ALL PART CORNERS
+			--------------------------------------------------
+
+			local Half =
+				Object.Size / 2
+
+			for X = -1, 1, 2 do
+				for Y = -1, 1, 2 do
+					for Z = -1, 1, 2 do
+						local Corner =
+							Object.CFrame
+							* Vector3.new(
+								Half.X * X,
+								Half.Y * Y,
+								Half.Z * Z
+							)
+
+						MinimumY =
+							math.min(
+								MinimumY,
+								Corner.Y
+							)
+
+						MaximumY =
+							math.max(
+								MaximumY,
+								Corner.Y
+							)
+					end
+				end
+			end
+		end
+	end
+
+	if MinimumY
+			== math.huge
+		or MaximumY
+			== -math.huge
+	then
+		return 5
+	end
+
+	return MaximumY
+		- MinimumY
+end
+
+--------------------------------------------------
+-- CHARACTER WIDTH
+--------------------------------------------------
+
+function Navigator:GetBodyWidth()
+	local Character =
+		self:GetCharacter()
+
+	local Root =
+		self:GetRoot()
+
+	if not Character
+		or not Root
+	then
+		return 2
+	end
+
+	--------------------------------------------------
+	-- DO NOT USE ARMS / ACCESSORIES.
+	--
+	-- PATHFINDING NEEDS THE CHARACTER COLLISION
+	-- FOOTPRINT, NOT ITS VISUAL EXTENTS.
+	--------------------------------------------------
+
+	local CandidateNames = {
+		"HumanoidRootPart",
+		"Torso",
+		"UpperTorso",
+		"LowerTorso",
+	}
+
+	local Width =
+		math.max(
+			Root.Size.X,
+			Root.Size.Z
+		)
+
+	for _, Name
+		in ipairs(
+			CandidateNames
+		)
+	do
+		local Part =
+			Character:FindFirstChild(
+				Name
+			)
+
+		if Part
+			and Part:IsA(
+				"BasePart"
+			)
+		then
+			Width =
+				math.max(
+					Width,
+					Part.Size.X,
+					Part.Size.Z
+				)
+		end
+	end
+
+	return Width
+end
+
+--------------------------------------------------
+-- JUMP CAPABILITY
+--------------------------------------------------
+
+function Navigator:CanCharacterJump()
+	local Humanoid =
+		self:GetHumanoid()
+
+	if not Humanoid then
+		return true
+	end
+
+	if Humanoid.UseJumpPower then
+		return Humanoid.JumpPower
+			> 0
+	end
+
+	return Humanoid.JumpHeight
+		> 0
+end
+
+--------------------------------------------------
+-- CALCULATE AGENT
+--------------------------------------------------
+
+function Navigator:CalculateAgent()
+	local Width =
+		self:GetBodyWidth()
+
+	local Height =
+		self:GetBodyHeight()
+
+	--------------------------------------------------
+	-- RADIUS
+	--------------------------------------------------
+
+	local Radius =
+		Width / 2
+		+ self.Config.RadiusPadding
+
+	Radius =
+		math.clamp(
+			Radius,
+			self.Config.MinAgentRadius,
+			self.Config.MaxAgentRadius
+		)
+
+	--------------------------------------------------
+	-- HEIGHT
+	--------------------------------------------------
+
+	local AgentHeight =
+		Height
+		+ self.Config.HeightPadding
+
+	AgentHeight =
+		math.clamp(
+			AgentHeight,
+			self.Config.MinAgentHeight,
+			self.Config.MaxAgentHeight
+		)
+
+	--------------------------------------------------
+	-- WAYPOINT SPACING
+	--------------------------------------------------
+
+	local WaypointSpacing =
+		math.clamp(
+			Radius * 2.4,
+			self.Config.MinWaypointSpacing,
+			self.Config.MaxWaypointSpacing
+		)
+
+	self._agentSettings = {
+		BodyWidth =
+			Width,
+
+		BodyHeight =
+			Height,
+
+		AgentRadius =
+			Radius,
+
+		AgentHeight =
+			AgentHeight,
+
+		WaypointSpacing =
+			WaypointSpacing,
+
+		AgentCanJump =
+			self:CanCharacterJump(),
+	}
+
+	return self._agentSettings
+end
+
+--------------------------------------------------
+-- GET AGENT
+--------------------------------------------------
+
+function Navigator:GetAgentSettings()
+	local Character =
+		self:GetCharacter()
+
+	if not Character then
+		return self:CalculateAgent()
+	end
+
+	if self._character
+		~= Character
+	then
+		self._character =
+			Character
+
+		return self:CalculateAgent()
+	end
+
+	if not self._agentSettings then
+		return self:CalculateAgent()
+	end
+
+	return self._agentSettings
+end
+
+--------------------------------------------------
+-- ROOT HEIGHT
+--------------------------------------------------
+
+function Navigator:GetRootHeight()
+	local Humanoid =
+		self:GetHumanoid()
+
+	local Root =
+		self:GetRoot()
+
+	if not Humanoid
+		or not Root
+	then
+		return 3
+	end
+
+	return Humanoid.HipHeight
+		+ Root.Size.Y / 2
+end
+
+--------------------------------------------------
+-- RAY PARAMS
+--------------------------------------------------
+
+function Navigator:GetRaycastParams()
+	local Params =
+		RaycastParams.new()
+
+	Params.FilterType =
+		Enum.RaycastFilterType.Exclude
+
+	local Character =
+		self:GetCharacter()
+
+	if Character then
+		Params.FilterDescendantsInstances = {
+			Character,
+		}
+	end
+
+	Params.IgnoreWater =
+		false
+
+	return Params
+end
+
+--------------------------------------------------
+-- GROUND TARGET
+--------------------------------------------------
+
+function Navigator:GetGroundTarget(
+	Position
+)
+	local Params =
+		self:GetRaycastParams()
+
+	local Origin =
+		Position
+		+ Vector3.new(
+			0,
+			self.Config.GroundProbeHeight,
+			0
+		)
+
+	local Distance =
+		self.Config.GroundProbeHeight
+		+ self.Config.GroundProbeDepth
+
+	local Result =
+		Workspace:Raycast(
+			Origin,
+			Vector3.new(
+				0,
+				-Distance,
+				0
+			),
+			Params
+		)
+
+	if not Result then
+		return Position
+	end
+
+	return Result.Position
+		+ Vector3.new(
+			0,
+			self:GetRootHeight(),
+			0
+		)
+end
+
+--------------------------------------------------
+-- CREATE PATH
+--------------------------------------------------
+
+function Navigator:CreatePath(
+	StartPosition,
+	TargetPosition
+)
+	local Agent =
+		self:GetAgentSettings()
+
+	local Path =
+		PathfindingService:CreatePath({
+			AgentRadius =
+				Agent.AgentRadius,
+
+			AgentHeight =
+				Agent.AgentHeight,
+
+			AgentCanJump =
+				Agent.AgentCanJump,
+
+			AgentCanClimb =
+				false,
+
+			WaypointSpacing =
+				Agent.WaypointSpacing,
+		})
+
+	local Success =
+		pcall(function()
+			Path:ComputeAsync(
+				StartPosition,
+				TargetPosition
+			)
+		end)
+
+	if not Success then
+		return nil
+	end
+
+	if Path.Status
+		~= Enum.PathStatus.Success
+	then
+		return nil
+	end
+
+	return Path
+end
+
+--------------------------------------------------
+-- WALL CLEARANCE
+--------------------------------------------------
+
+function Navigator:HasClearCorridor(
+	StartPosition,
+	EndPosition
+)
+	local Difference =
+		EndPosition
+		- StartPosition
+
+	local Distance =
+		Difference.Magnitude
+
+	if Distance <= 0.1 then
+		return true
+	end
+
+	local Agent =
+		self:GetAgentSettings()
+
+	local Radius =
+		Agent.AgentRadius
+		+ self.Config.CorridorExtraPadding
+
+	--------------------------------------------------
+	-- CHECK AT ROOT HEIGHT, NOT FLOOR LEVEL
+	--------------------------------------------------
+
+	local RootHeight =
+		self:GetRootHeight()
+
+	local Start =
+		Vector3.new(
+			StartPosition.X,
+			StartPosition.Y
+				+ RootHeight * 0.25,
+			StartPosition.Z
+		)
+
+	local Finish =
+		Vector3.new(
+			EndPosition.X,
+			EndPosition.Y
+				+ RootHeight * 0.25,
+			EndPosition.Z
+		)
+
+	local Direction =
+		Finish - Start
+
+	--------------------------------------------------
+	-- BOXCAST GIVES MUCH BETTER WALL CLEARANCE
+	-- THAN A SINGLE RAY.
+	--------------------------------------------------
+
+	local BoxSize =
+		Vector3.new(
+			Radius * 2,
+			math.min(
+				self.Config.CorridorHeight,
+				Agent.AgentHeight
+			),
+			Radius * 2
+		)
+
+	local Params =
+		self:GetRaycastParams()
+
+	local Result =
+		Workspace:Blockcast(
+			CFrame.new(
+				Start
+			),
+			BoxSize,
+			Direction,
+			Params
+		)
+
+	return Result == nil
+end
+
+--------------------------------------------------
+-- SMOOTH WAYPOINTS
+--------------------------------------------------
+
+function Navigator:SmoothWaypoints(
+	Waypoints
+)
+	if not self.Config.SmoothWaypoints then
+		return Waypoints
+	end
+
+	if #Waypoints <= 2 then
+		return Waypoints
+	end
+
+	local Result = {}
+
+	local Index = 1
+
+	table.insert(
+		Result,
+		Waypoints[Index]
+	)
+
+	while Index < #Waypoints do
+		local BestIndex =
+			math.min(
+				Index + 1,
+				#Waypoints
+			)
+
+		local MaxCandidate =
+			math.min(
+				Index
+					+ self.Config.MaxSmoothLookAhead,
+				#Waypoints
+			)
+
+		for CandidateIndex =
+			MaxCandidate,
+			Index + 1,
+			-1
+		do
+			local ContainsJump =
+				false
+
+			for CheckIndex =
+				Index + 1,
+				CandidateIndex
+			do
+				if Waypoints[
+					CheckIndex
+				].Action
+					== Enum.PathWaypointAction.Jump
+				then
+					ContainsJump =
+						true
+
+					break
+				end
+			end
+
+			if not ContainsJump
+				and self:HasClearCorridor(
+					Waypoints[Index].Position,
+					Waypoints[
+						CandidateIndex
+					].Position
+				)
+			then
+				BestIndex =
+					CandidateIndex
+
+				break
+			end
+		end
+
+		Index =
+			BestIndex
+
+		table.insert(
+			Result,
+			Waypoints[Index]
+		)
+	end
+
+	return Result
+end
+
+--------------------------------------------------
+-- CANCEL
+--------------------------------------------------
+
+function Navigator:Cancel()
+	self._moveGeneration += 1
+
+	local Humanoid =
+		self:GetHumanoid()
+
+	local Root =
+		self:GetRoot()
+
+	if Humanoid
+		and Root
+	then
+		Humanoid:MoveTo(
+			Root.Position
+		)
+	end
+end
+
+--------------------------------------------------
+-- ABORT
+--------------------------------------------------
+
+function Navigator:CheckAbort(
+	Generation,
+	Options
+)
+	if Generation
+		~= self._moveGeneration
+	then
+		return "Cancelled"
+	end
+
+	if Options
+		and type(
+			Options.ShouldAbort
+		) == "function"
+	then
+		local Reason =
+			Options.ShouldAbort()
+
+		if Reason then
+			return Reason
+		end
+	end
+
+	return nil
+end
+
+--------------------------------------------------
+-- FORCE JUMP
+--------------------------------------------------
+
+function Navigator:ForceJump()
+	local Humanoid =
+		self:GetHumanoid()
+
+	if not Humanoid then
+		return
+	end
+
+	Humanoid.Jump =
+		true
+
+	Humanoid:ChangeState(
+		Enum.HumanoidStateType.Jumping
+	)
+end
+
+--------------------------------------------------
+-- SHOULD JUMP TO NEXT WAYPOINT
+--------------------------------------------------
+
+function Navigator:ShouldJump(
+	CurrentPosition,
+	Waypoint
+)
+	if Waypoint.Action
+		== Enum.PathWaypointAction.Jump
+	then
+		return true
+	end
+
+	local HeightDifference =
+		Waypoint.Position.Y
+		- CurrentPosition.Y
+
+	if HeightDifference
+		>= self.Config.ForceJumpHeightDifference
+	then
+		return true
+	end
+
+	return false
+end
+
+--------------------------------------------------
+-- FOLLOW WAYPOINT
+--------------------------------------------------
+
+function Navigator:FollowWaypoint(
+	Waypoint,
+	Generation,
+	Options,
+	IsFinal
+)
+	local Humanoid =
+		self:GetHumanoid()
+
+	local Root =
+		self:GetRoot()
+
+	if not Humanoid
+		or not Root
+	then
+		return false,
+			"NoCharacter"
+	end
+
+	--------------------------------------------------
+	-- JUMP BEFORE MOVEMENT IF NECESSARY
+	--------------------------------------------------
+
+	local NeedsJump =
+		self:ShouldJump(
+			Root.Position,
+			Waypoint
+		)
+
+	if NeedsJump then
+		self:ForceJump()
+
+		task.wait(
+			0.04
+		)
+	end
+
+	--------------------------------------------------
+	-- MOVE AT EXISTING WALKSPEED
+	--------------------------------------------------
+
+	Humanoid:MoveTo(
+		Waypoint.Position
+	)
+
+	local Started =
+		os.clock()
+
+	local JumpRetries =
+		0
+
+	local LastJump =
+		os.clock()
+
+	local ReachDistance =
+		IsFinal
+			and self.Config.FinalReachDistance
+			or self.Config.WaypointReachDistance
+
+	while true do
+		local Abort =
+			self:CheckAbort(
+				Generation,
+				Options
+			)
+
+		if Abort then
+			return false,
+				Abort
+		end
+
+		Humanoid =
+			self:GetHumanoid()
+
+		Root =
+			self:GetRoot()
+
+		if not Humanoid
+			or not Root
+		then
+			return false,
+				"NoCharacter"
+		end
+
+		local Difference =
+			Waypoint.Position
+			- Root.Position
+
+		local HorizontalDistance =
+			Vector3.new(
+				Difference.X,
+				0,
+				Difference.Z
+			).Magnitude
+
+		local VerticalDistance =
+			math.abs(
+				Difference.Y
+			)
+
+		--------------------------------------------------
+		-- REACHED
+		--------------------------------------------------
+
+		if HorizontalDistance
+				<= ReachDistance
+			and VerticalDistance
+				<= 4
+		then
+			return true,
+				"Reached"
+		end
+
+		--------------------------------------------------
+		-- JUMP RETRY
+		--------------------------------------------------
+
+		if NeedsJump
+			and Humanoid.FloorMaterial
+				~= Enum.Material.Air
+			and os.clock()
+				- LastJump
+				>= self.Config.JumpRetryDelay
+			and JumpRetries
+				< self.Config.MaxJumpRetries
+		then
+			JumpRetries += 1
+
+			LastJump =
+				os.clock()
+
+			self:ForceJump()
+		end
+
+		--------------------------------------------------
+		-- IF WE ARE STUCK BELOW THE WAYPOINT,
+		-- TRY JUMPING EVEN IF PATH DIDN'T MARK IT.
+		--------------------------------------------------
+
+		if Difference.Y
+				>= self.Config.ForceJumpHeightDifference
+			and Humanoid.FloorMaterial
+				~= Enum.Material.Air
+			and os.clock()
+				- LastJump
+				>= self.Config.JumpRetryDelay
+		then
+			LastJump =
+				os.clock()
+
+			self:ForceJump()
+		end
+
+		--------------------------------------------------
+		-- TIMEOUT
+		--------------------------------------------------
+
+		if os.clock()
+			- Started
+			>= self.Config.WaypointTimeout
+		then
+			return false,
+				"Blocked"
+		end
+
+		RunService.Heartbeat:Wait()
+	end
+end
+
+--------------------------------------------------
+-- FOLLOW PATH
+--------------------------------------------------
+
+function Navigator:FollowPath(
+	Path,
+	Generation,
+	Options
+)
+	local Waypoints =
+		Path:GetWaypoints()
+
+	if #Waypoints == 0 then
+		return false,
+			"Blocked"
+	end
+
+	Waypoints =
+		self:SmoothWaypoints(
+			Waypoints
+		)
+
+	local CurrentIndex = 1
+
+	local PathBlocked =
+		false
+
+	local BlockedConnection =
+		Path.Blocked:Connect(
+			function(BlockedIndex)
+				if BlockedIndex
+					>= CurrentIndex
+				then
+					PathBlocked =
+						true
+				end
+			end
+		)
+
+	for Index, Waypoint
+		in ipairs(
+			Waypoints
+		)
+	do
+		CurrentIndex =
+			Index
+
+		if PathBlocked then
+			BlockedConnection:Disconnect()
+
+			return false,
+				"Repath"
+		end
+
+		local Reached,
+			Reason =
+			self:FollowWaypoint(
+				Waypoint,
+				Generation,
+				Options,
+				Index == #Waypoints
+			)
+
+		if not Reached then
+			BlockedConnection:Disconnect()
+
+			return false,
+				Reason
+		end
+	end
+
+	BlockedConnection:Disconnect()
+
+	return true,
+		"Reached"
+end
+
+--------------------------------------------------
+-- MOVE
+--------------------------------------------------
+
+function Navigator:MoveTo(
+	Target,
+	Options
+)
+	Options =
+		Options or {}
+
+	local Root =
+		self:GetRoot()
+
+	local Humanoid =
+		self:GetHumanoid()
+
+	if not Root
+		or not Humanoid
+	then
+		return false,
+			"NoCharacter"
+	end
+
+	--------------------------------------------------
+	-- AUTO RECALCULATE CHARACTER AGENT
+	--------------------------------------------------
+
+	self:GetAgentSettings()
+
+	--------------------------------------------------
+	-- DO NOT CHANGE:
+	--
+	-- Humanoid.WalkSpeed
+	-- Humanoid.JumpPower
+	-- Humanoid.JumpHeight
+	--------------------------------------------------
+
+	self:Cancel()
+
+	local Generation =
+		self._moveGeneration
+
+	local TargetPosition
+
+	if typeof(Target)
+		== "Vector3"
+	then
+		TargetPosition =
+			Target
+
+	elseif typeof(Target)
+		== "CFrame"
+	then
+		TargetPosition =
+			Target.Position
+
+	elseif typeof(Target)
+			== "Instance"
+		and Target:IsA(
+			"BasePart"
+		)
+	then
+		TargetPosition =
+			Target.Position
+
+	else
+		return false,
+			"InvalidTarget"
+	end
+
+	--------------------------------------------------
+	-- PROJECT TARGET TO FLOOR
+	--------------------------------------------------
+
+	if Options.ProjectToGround
+		~= false
+	then
+		TargetPosition =
+			self:GetGroundTarget(
+				TargetPosition
+			)
+	end
+
+	--------------------------------------------------
+	-- PATH / REPATH LOOP
+	--------------------------------------------------
+
+	for Attempt = 1,
+		self.Config.MaxRepaths
+	do
+		local Abort =
+			self:CheckAbort(
+				Generation,
+				Options
+			)
+
+		if Abort then
+			return false,
+				Abort
+		end
+
+		Root =
+			self:GetRoot()
+
+		if not Root then
+			return false,
+				"NoCharacter"
+		end
+
+		if (
+			Root.Position
+			- TargetPosition
+		).Magnitude
+			<= self.Config.FinalReachDistance
+		then
+			return true,
+				"Reached"
+		end
+
+		--------------------------------------------------
+		-- FRESH PATH
+		--------------------------------------------------
+
+		local Path =
+			self:CreatePath(
+				Root.Position,
+				TargetPosition
+			)
+
+		if not Path then
+			task.wait(
+				0.08
+			)
+
+			continue
+		end
+
+		local Reached,
+			Reason =
+			self:FollowPath(
+				Path,
+				Generation,
+				Options
+			)
+
+		if Reached then
+			return true,
+				"Reached"
+		end
+
+		if Reason
+			~= "Blocked"
+			and Reason
+				~= "Repath"
+		then
+			return false,
+				Reason
+		end
+
+		task.wait(
+			0.06
+		)
+	end
+
+	return false,
+		"Blocked"
+end
+
+--------------------------------------------------
+-- REFRESH WHEN CHARACTER RESPAWNS
+--------------------------------------------------
+
+LocalPlayer.CharacterAdded:Connect(
+	function(Character)
+		Navigator._character =
+			Character
+
+		task.wait(
+			0.5
+		)
+
+		Navigator:CalculateAgent()
+	end
+)
+
+--------------------------------------------------
+-- INITIAL CALCULATION
+--------------------------------------------------
+
+if LocalPlayer.Character then
+	task.defer(function()
+		Navigator:CalculateAgent()
+	end)
+end
+
+return Navigator
