@@ -1,12 +1,16 @@
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 
-local LocalPlayer = Players.LocalPlayer
+local LocalPlayer =
+	Players.LocalPlayer
 
 local RemoteEvent =
-	ReplicatedStorage:WaitForChild("RemoteEvent")
+	ReplicatedStorage:WaitForChild(
+		"RemoteEvent"
+	)
 
 local TempPlayerStatsModule =
 	require(
@@ -21,8 +25,11 @@ local AutoPlay = {}
 -- VERSION
 --------------------------------------------------
 
-AutoPlay.Name = "AutoPlay"
-AutoPlay.Version = "v1.0.1"
+AutoPlay.Name =
+	"AutoPlay"
+
+AutoPlay.Version =
+	"v1.1.0"
 
 print(
 	("[FleeTheFacility] %s %s loaded"):format(
@@ -54,20 +61,40 @@ AutoPlay.Config = {
 	ComputerTimeout = 60,
 
 	--------------------------------------------------
-	-- INTERACTION
+	-- COMPUTER APPROACH
 	--------------------------------------------------
 
-	TriggerHorizontalPadding = 1.15,
+	ComputerCenterDistance = 0.75,
 
-	TriggerVerticalPadding = 5,
+	TriggerMoveTimeout = 2,
 
-	TriggerMoveTimeout = 1.5,
+	TriggerSettleTime = 0.1,
 
-	TriggerConfirmTimeout = 0.75,
+	TriggerConfirmTimeout = 0.8,
 
-	TriggerSettleTime = 0.08,
+	ActionSettleTime = 0.1,
 
-	ActionSettleTime = 0.08,
+	--------------------------------------------------
+	-- HACK RETRY
+	--------------------------------------------------
+
+	HackRetryDelay = 0.3,
+
+	HackStallRetryTime = 1.8,
+
+	HackProgressEpsilon = 0.002,
+
+	--------------------------------------------------
+	-- ERROR SCREEN
+	--------------------------------------------------
+
+	ErrorMinimumRed = 0.42,
+
+	ErrorRedDominance = 0.08,
+
+	ErrorRetryDelay = 0.35,
+
+	ErrorColorWaitTimeout = 1.25,
 
 	--------------------------------------------------
 	-- BEAST
@@ -129,9 +156,11 @@ function AutoPlay:Init(
 		return
 	end
 
-	self._initialized = true
+	self._initialized =
+		true
 
-	self.Navigator = Navigator
+	self.Navigator =
+		Navigator
 
 	print(
 		("[FleeTheFacility] %s %s initialized"):format(
@@ -231,24 +260,22 @@ function AutoPlay:GetRoot()
 end
 
 --------------------------------------------------
--- STATS
+-- LOCAL STAT
 --------------------------------------------------
 
 function AutoPlay:GetStatValue(
 	Name
 )
-	if not TempPlayerStatsModule then
-		return nil
-	end
-
-	if type(
-		TempPlayerStatsModule.GetValue
-	) ~= "function"
+	if not TempPlayerStatsModule
+		or type(
+			TempPlayerStatsModule.GetValue
+		) ~= "function"
 	then
 		return nil
 	end
 
-	local Success, Value =
+	local Success,
+		Value =
 		pcall(
 			function()
 				return TempPlayerStatsModule.GetValue(
@@ -263,6 +290,32 @@ function AutoPlay:GetStatValue(
 
 	return Value
 end
+
+function AutoPlay:SetStatValue(
+	Name,
+	Value
+)
+	if not TempPlayerStatsModule
+		or type(
+			TempPlayerStatsModule.SetValue
+		) ~= "function"
+	then
+		return
+	end
+
+	pcall(
+		function()
+			TempPlayerStatsModule.SetValue(
+				Name,
+				Value
+			)
+		end
+	)
+end
+
+--------------------------------------------------
+-- OTHER PLAYER STATS
+--------------------------------------------------
 
 function AutoPlay:GetStats(
 	Player
@@ -280,7 +333,8 @@ function AutoPlay:GetStats(
 		return nil
 	end
 
-	local Success, Module =
+	local Success,
+		Module =
 		pcall(
 			require,
 			ModuleScript
@@ -314,7 +368,8 @@ function AutoPlay:IsBeast(
 			Stats.GetValue
 		) == "function"
 	then
-		local Success, Result =
+		local Success,
+			Result =
 			pcall(
 				function()
 					return Stats.GetValue(
@@ -395,208 +450,159 @@ function AutoPlay:IsBeastClose()
 end
 
 --------------------------------------------------
--- PHYSICAL TRIGGER POSITION
+-- SCREEN
 --------------------------------------------------
 
-function AutoPlay:IsAtTrigger(
-	Trigger
+function AutoPlay:GetComputerScreen(
+	Computer
 )
-	local Root =
-		self:GetRoot()
+	if not Computer then
+		return nil
+	end
 
-	if not Root
-		or not Trigger
-		or not Trigger.Parent
+	local Screen =
+		Computer:FindFirstChild(
+			"Screen"
+		)
+
+	if Screen
+		and Screen:IsA(
+			"BasePart"
+		)
+	then
+		return Screen
+	end
+
+	return nil
+end
+
+--------------------------------------------------
+-- COLOR MATCH
+--------------------------------------------------
+
+local function ColorsMatch(
+	A,
+	B
+)
+	local Tolerance =
+		1 / 255
+
+	return math.abs(
+		A.R - B.R
+	) <= Tolerance
+		and math.abs(
+			A.G - B.G
+		) <= Tolerance
+		and math.abs(
+			A.B - B.B
+		) <= Tolerance
+end
+
+--------------------------------------------------
+-- COMPUTER DONE
+--------------------------------------------------
+
+function AutoPlay:IsComputerDone(
+	Computer
+)
+	local Screen =
+		self:GetComputerScreen(
+			Computer
+		)
+
+	if not Screen then
+		return false
+	end
+
+	return ColorsMatch(
+		Screen.Color,
+		self.Config.ComputerDoneColor
+	)
+end
+
+--------------------------------------------------
+-- COMPUTER ERROR COLOR
+--------------------------------------------------
+
+function AutoPlay:IsComputerError(
+	Computer
+)
+	if not Computer
+		or self:IsComputerDone(
+			Computer
+		)
 	then
 		return false
 	end
 
-	local LocalPosition =
-		Trigger.CFrame:PointToObjectSpace(
-			Root.Position
+	local Screen =
+		self:GetComputerScreen(
+			Computer
 		)
 
-	local HalfSize =
-		Trigger.Size / 2
+	if not Screen then
+		return false
+	end
 
-	local Horizontal =
-		self.Config.TriggerHorizontalPadding
+	local Color =
+		Screen.Color
 
-	local Vertical =
-		self.Config.TriggerVerticalPadding
+	local Red =
+		Color.R
 
-	return math.abs(
-		LocalPosition.X
-	) <= HalfSize.X + Horizontal
-		and math.abs(
-			LocalPosition.Z
-		) <= HalfSize.Z + Horizontal
-		and math.abs(
-			LocalPosition.Y
-		) <= HalfSize.Y + Vertical
+	local Green =
+		Color.G
+
+	local Blue =
+		Color.B
+
+	if Red
+		< self.Config.ErrorMinimumRed
+	then
+		return false
+	end
+
+	local Dominance =
+		Red
+		- math.max(
+			Green,
+			Blue
+		)
+
+	return Dominance
+		>= self.Config.ErrorRedDominance
 end
 
 --------------------------------------------------
--- SETTLE INTO TRIGGER
+-- WAIT FOR ERROR COLOR TO CLEAR
 --------------------------------------------------
 
-function AutoPlay:SettleIntoTrigger(
-	Trigger,
+function AutoPlay:WaitForComputerErrorClear(
+	Computer,
 	Token
 )
-	if not Trigger
-		or not Trigger.Parent
-	then
-		return false,
-			"MissingTrigger"
-	end
-
-	if self:IsAtTrigger(
-		Trigger
-	)
-	then
-		return true
-	end
-
-	local Humanoid =
-		self:GetHumanoid()
-
-	local Root =
-		self:GetRoot()
-
-	if not Humanoid
-		or not Root
-	then
-		return false,
-			"NoCharacter"
-	end
-
-	--------------------------------------------------
-	-- MOVE HORIZONTALLY TOWARD ACTUAL TRIGGER
-	--
-	-- DON'T CHANGE WALKSPEED
-	--------------------------------------------------
-
-	local Destination =
-		Vector3.new(
-			Trigger.Position.X,
-			Root.Position.Y,
-			Trigger.Position.Z
-		)
-
-	Humanoid:MoveTo(
-		Destination
-	)
-
 	local Started =
 		os.clock()
 
-	while os.clock()
-		- Started
-		< self.Config.TriggerMoveTimeout
+	while self.Config.Enabled
+		and Token
+			== self._runToken
+		and self:IsComputerError(
+			Computer
+		)
+		and os.clock()
+			- Started
+			< self.Config.ErrorColorWaitTimeout
 	do
-		if not self.Config.Enabled
-			or Token
-				~= self._runToken
-		then
-			return false,
-				"Stopped"
-		end
-
 		if self:IsBeastClose() then
 			return false,
 				"Threat"
 		end
 
-		if self:IsAtTrigger(
-			Trigger
-		)
-		then
-			Humanoid:MoveTo(
-				Root.Position
-			)
-
-			task.wait(
-				self.Config.TriggerSettleTime
-			)
-
-			return true
-		end
-
-		Root =
-			self:GetRoot()
-
-		if not Root then
-			return false,
-				"NoCharacter"
-		end
-
 		task.wait(
-			0.03
+			0.05
 		)
 	end
-
-	return self:IsAtTrigger(
-		Trigger
-	),
-		"TriggerPositionTimeout"
-end
-
---------------------------------------------------
--- WAIT FOR GAME TO REGISTER TRIGGER
---------------------------------------------------
-
-function AutoPlay:WaitForTriggerConfirmation(
-	Token
-)
-	local Started =
-		os.clock()
-
-	while os.clock()
-		- Started
-		< self.Config.TriggerConfirmTimeout
-	do
-		if not self.Config.Enabled
-			or Token
-				~= self._runToken
-		then
-			return false
-		end
-
-		local OnTrigger =
-			self:GetStatValue(
-				"OnTrigger"
-			)
-
-		--------------------------------------------------
-		-- GAME CONFIRMED TRIGGER
-		--------------------------------------------------
-
-		if OnTrigger == true then
-			return true
-		end
-
-		--------------------------------------------------
-		-- IF THIS STAT ISN'T EXPOSED,
-		-- DON'T BLOCK THE SYSTEM FOREVER.
-		--------------------------------------------------
-
-		if OnTrigger == nil
-			and os.clock()
-				- Started
-				>= self.Config.TriggerSettleTime
-		then
-			return true
-		end
-
-		task.wait(
-			0.025
-		)
-	end
-
-	--------------------------------------------------
-	-- ALLOW FALLBACK AFTER TIMEOUT
-	--------------------------------------------------
 
 	return true
 end
@@ -649,6 +655,56 @@ function AutoPlay:LeaveTrigger()
 end
 
 --------------------------------------------------
+-- WAIT FOR ONTRIGGER
+--------------------------------------------------
+
+function AutoPlay:WaitForTriggerConfirmation(
+	Token
+)
+	local Started =
+		os.clock()
+
+	while os.clock()
+		- Started
+		< self.Config.TriggerConfirmTimeout
+	do
+		if not self.Config.Enabled
+			or Token
+				~= self._runToken
+		then
+			return false
+		end
+
+		local OnTrigger =
+			self:GetStatValue(
+				"OnTrigger"
+			)
+
+		if OnTrigger == true then
+			return true
+		end
+
+		--------------------------------------------------
+		-- SOME VERSIONS DON'T EXPOSE ONTRIGGER
+		--------------------------------------------------
+
+		if OnTrigger == nil
+			and os.clock()
+				- Started
+				>= self.Config.TriggerSettleTime
+		then
+			return true
+		end
+
+		task.wait(
+			0.025
+		)
+	end
+
+	return true
+end
+
+--------------------------------------------------
 -- ENTER TRIGGER
 --------------------------------------------------
 
@@ -692,11 +748,6 @@ function AutoPlay:EnterTrigger(
 		end
 	)
 
-	--------------------------------------------------
-	-- THIS IS THE IMPORTANT FIX:
-	-- WAIT UNTIL TRIGGER STATE HAS TIME TO REGISTER
-	--------------------------------------------------
-
 	self:WaitForTriggerConfirmation(
 		Token
 	)
@@ -732,6 +783,15 @@ function AutoPlay:StartAction(
 				true
 			)
 		end
+	)
+
+	--------------------------------------------------
+	-- MATCH CLIENT ACTION BEHAVIOR
+	--------------------------------------------------
+
+	self:SetStatValue(
+		"ActionInput",
+		true
 	)
 
 	task.wait(
@@ -807,10 +867,6 @@ function AutoPlay:HandleSkillCheck()
 		return
 	end
 
-	--------------------------------------------------
-	-- DON'T SEND SAME CHECK EVERY FRAME
-	--------------------------------------------------
-
 	if self._lastSkillGoal
 		== Goal
 	then
@@ -827,58 +883,6 @@ function AutoPlay:HandleSkillCheck()
 				true
 			)
 		end
-	)
-end
-
---------------------------------------------------
--- COLOR
---------------------------------------------------
-
-local function ColorsMatch(
-	A,
-	B
-)
-	local Tolerance =
-		1 / 255
-
-	return math.abs(
-		A.R - B.R
-	) <= Tolerance
-		and math.abs(
-			A.G - B.G
-		) <= Tolerance
-		and math.abs(
-			A.B - B.B
-		) <= Tolerance
-end
-
---------------------------------------------------
--- COMPUTER DONE
---------------------------------------------------
-
-function AutoPlay:IsComputerDone(
-	Computer
-)
-	if not Computer then
-		return true
-	end
-
-	local Screen =
-		Computer:FindFirstChild(
-			"Screen"
-		)
-
-	if not Screen
-		or not Screen:IsA(
-			"BasePart"
-		)
-	then
-		return false
-	end
-
-	return ColorsMatch(
-		Screen.Color,
-		self.Config.ComputerDoneColor
 	)
 end
 
@@ -960,7 +964,7 @@ function AutoPlay:GetComputerTriggers(
 end
 
 --------------------------------------------------
--- OCCUPANCY
+-- OCCUPIED
 --------------------------------------------------
 
 function AutoPlay:IsTriggerOccupied(
@@ -1016,7 +1020,7 @@ function AutoPlay:IsTriggerOccupied(
 end
 
 --------------------------------------------------
--- AVAILABLE COMPUTER TRIGGERS
+-- AVAILABLE TRIGGERS
 --------------------------------------------------
 
 function AutoPlay:GetAvailableTriggers(
@@ -1078,14 +1082,11 @@ function AutoPlay:GetNearestComputerTarget()
 			Computer
 		)
 		then
-			local Triggers =
-				self:GetAvailableTriggers(
-					Computer
-				)
-
 			for _, Trigger
 				in ipairs(
-					Triggers
+					self:GetAvailableTriggers(
+						Computer
+					)
 				)
 			do
 				local Distance =
@@ -1140,6 +1141,199 @@ function AutoPlay:AreComputersDone()
 end
 
 --------------------------------------------------
+-- COMPUTER TRIGGER CENTER DISTANCE
+--------------------------------------------------
+
+function AutoPlay:GetTriggerHorizontalDistance(
+	Trigger
+)
+	local Root =
+		self:GetRoot()
+
+	if not Root
+		or not Trigger
+	then
+		return math.huge
+	end
+
+	local Difference =
+		Trigger.Position
+		- Root.Position
+
+	return Vector3.new(
+		Difference.X,
+		0,
+		Difference.Z
+	).Magnitude
+end
+
+--------------------------------------------------
+-- MOVE VERY CLOSE TO COMPUTER
+--------------------------------------------------
+
+function AutoPlay:SettleIntoTrigger(
+	Trigger,
+	Token
+)
+	if not Trigger
+		or not Trigger.Parent
+	then
+		return false,
+			"MissingTrigger"
+	end
+
+	local Root =
+		self:GetRoot()
+
+	local Humanoid =
+		self:GetHumanoid()
+
+	if not Root
+		or not Humanoid
+	then
+		return false,
+			"NoCharacter"
+	end
+
+	if self.Navigator then
+		self.Navigator:Cancel()
+	end
+
+	local Destination =
+		Vector3.new(
+			Trigger.Position.X,
+			Root.Position.Y,
+			Trigger.Position.Z
+		)
+
+	Humanoid:MoveTo(
+		Destination
+	)
+
+	local Started =
+		os.clock()
+
+	local LastPosition =
+		Root.Position
+
+	local LastMovementTime =
+		os.clock()
+
+	local LastJumpTime =
+		0
+
+	while os.clock()
+		- Started
+		< self.Config.TriggerMoveTimeout
+	do
+		if not self.Config.Enabled
+			or Token
+				~= self._runToken
+		then
+			return false,
+				"Stopped"
+		end
+
+		if self:IsBeastClose() then
+			return false,
+				"Threat"
+		end
+
+		Root =
+			self:GetRoot()
+
+		Humanoid =
+			self:GetHumanoid()
+
+		if not Root
+			or not Humanoid
+		then
+			return false,
+				"NoCharacter"
+		end
+
+		local Distance =
+			self:GetTriggerHorizontalDistance(
+				Trigger
+			)
+
+		--------------------------------------------------
+		-- ACTUALLY CLOSE ENOUGH
+		--------------------------------------------------
+
+		if Distance
+			<= self.Config.ComputerCenterDistance
+		then
+			Humanoid:MoveTo(
+				Root.Position
+			)
+
+			task.wait(
+				self.Config.TriggerSettleTime
+			)
+
+			return true,
+				"Reached"
+		end
+
+		--------------------------------------------------
+		-- TRACK MOVEMENT
+		--------------------------------------------------
+
+		if (
+			Root.Position
+			- LastPosition
+		).Magnitude
+			>= 0.25
+		then
+			LastPosition =
+				Root.Position
+
+			LastMovementTime =
+				os.clock()
+		end
+
+		--------------------------------------------------
+		-- BOXED IN NEAR COMPUTER -> JUMP
+		--------------------------------------------------
+
+		if os.clock()
+				- LastMovementTime
+				>= 0.4
+			and Humanoid.FloorMaterial
+				~= Enum.Material.Air
+			and os.clock()
+				- LastJumpTime
+				>= 0.25
+		then
+			LastJumpTime =
+				os.clock()
+
+			Humanoid.Jump =
+				true
+
+			Humanoid:ChangeState(
+				Enum.HumanoidStateType.Jumping
+			)
+
+			Humanoid:MoveTo(
+				Destination
+			)
+
+			LastMovementTime =
+				os.clock()
+		end
+
+		RunService.Heartbeat:Wait()
+	end
+
+	return self:GetTriggerHorizontalDistance(
+		Trigger
+	) <= self.Config.ComputerCenterDistance,
+		"TriggerPositionTimeout"
+end
+
+--------------------------------------------------
 -- DOORS
 --------------------------------------------------
 
@@ -1187,10 +1381,6 @@ function AutoPlay:GetDoorTrigger(
 
 	return nil
 end
-
---------------------------------------------------
--- DOOR OPEN
---------------------------------------------------
 
 function AutoPlay:IsDoorOpen(
 	Door
@@ -1267,7 +1457,7 @@ local function DistanceToSegment(
 end
 
 --------------------------------------------------
--- FIND DOOR ON ROUTE
+-- FIND DOOR
 --------------------------------------------------
 
 function AutoPlay:FindDoorOnRoute(
@@ -1554,10 +1744,6 @@ function AutoPlay:NavigateWithDoors(
 			return false,
 				Reason
 		end
-
-		task.wait(
-			0.08
-		)
 	end
 
 	local Reached,
@@ -1583,24 +1769,10 @@ function AutoPlay:NavigateWithDoors(
 		if Door
 			and DoorTrigger
 		then
-			local Opened,
-				DoorReason =
-				self:OpenDoor(
-					Door,
-					DoorTrigger,
-					Token
-				)
-
-			if not Opened
-				and DoorReason
-					== "Threat"
-			then
-				return false,
-					DoorReason
-			end
-
-			task.wait(
-				0.08
+			self:OpenDoor(
+				Door,
+				DoorTrigger,
+				Token
 			)
 
 			return self:NavigateTo(
@@ -1747,10 +1919,6 @@ function AutoPlay:HideFromBeast(
 	Humanoid.AutoRotate =
 		OriginalAutoRotate
 
-	--------------------------------------------------
-	-- CLEAR ANY STALE TRIGGER STATE AFTER HIDE
-	--------------------------------------------------
-
 	self:LeaveTrigger()
 
 	task.wait(
@@ -1758,6 +1926,85 @@ function AutoPlay:HideFromBeast(
 	)
 
 	return true
+end
+
+--------------------------------------------------
+-- RESTART COMPUTER ACTION
+--------------------------------------------------
+
+function AutoPlay:RestartComputerAction(
+	Computer,
+	Trigger,
+	Token,
+	Status
+)
+	self:_SetStatus(
+		Status or "Retrying hack"
+	)
+
+	self:LeaveTrigger()
+
+	task.wait(
+		self.Config.HackRetryDelay
+	)
+
+	if self:IsBeastClose() then
+		return false,
+			"Threat"
+	end
+
+	if self:IsComputerDone(
+		Computer
+	)
+	then
+		return true,
+			"Completed"
+	end
+
+	if self:IsComputerError(
+		Computer
+	)
+	then
+		local Cleared,
+			Reason =
+			self:WaitForComputerErrorClear(
+				Computer,
+				Token
+			)
+
+		if not Cleared then
+			return false,
+				Reason
+		end
+
+		task.wait(
+			self.Config.ErrorRetryDelay
+		)
+	end
+
+	local Settled,
+		Reason =
+		self:SettleIntoTrigger(
+			Trigger,
+			Token
+		)
+
+	if not Settled then
+		return false,
+			Reason
+	end
+
+	if not self:StartAction(
+		Trigger,
+		Token
+	)
+	then
+		return false,
+			"ActionFailed"
+	end
+
+	return true,
+		"Started"
 end
 
 --------------------------------------------------
@@ -1797,6 +2044,10 @@ function AutoPlay:HackComputer(
 		"Going to computer"
 	)
 
+	--------------------------------------------------
+	-- NAVIGATOR GETS US NEAR IT
+	--------------------------------------------------
+
 	local Reached,
 		Reason =
 		self:NavigateWithDoors(
@@ -1824,110 +2075,20 @@ function AutoPlay:HackComputer(
 		return false
 	end
 
-	if self:IsComputerDone(
-		Computer
-	)
-	then
-		return true
-	end
-
-	if self:IsTriggerOccupied(
-		Trigger
-	)
-	then
-		self:_SetStatus(
-			"Spot taken"
-		)
-
-		return false
-	end
-
-	if self:IsBeastClose() then
-		self:HideFromBeast(
-			Token
-		)
-
-		return false
-	end
-
 	--------------------------------------------------
-	-- IMPORTANT:
-	-- NAVIGATOR GOT US NEAR IT.
-	-- NOW SETTLE INTO REAL TRIGGER POSITION.
+	-- KEEP THIS SAME COMPUTER UNTIL IT'S DONE
 	--------------------------------------------------
-
-	self:_SetStatus(
-		"Positioning"
-	)
-
-	local Settled,
-		SettleReason =
-		self:SettleIntoTrigger(
-			Trigger,
-			Token
-		)
-
-	if not Settled then
-		if SettleReason
-			== "Threat"
-		then
-			self:HideFromBeast(
-				Token
-			)
-		end
-
-		return false
-	end
-
-	if self:IsComputerDone(
-		Computer
-	)
-	then
-		return true
-	end
-
-	if self:IsTriggerOccupied(
-		Trigger
-	)
-	then
-		return false
-	end
-
-	self:_SetStatus(
-		"Hacking"
-	)
-
-	--------------------------------------------------
-	-- TRIGGER TRUE
-	-- WAIT FOR ONTRIGGER
-	-- THEN ACTION TRUE
-	--------------------------------------------------
-
-	if not self:StartAction(
-		Trigger,
-		Token
-	)
-	then
-		return false
-	end
-
-	local Started =
-		os.clock()
 
 	while self.Config.Enabled
 		and Token
 			== self._runToken
-	do
-		if self:IsComputerDone(
+		and not self:IsComputerDone(
 			Computer
 		)
-		then
-			self:_SetProgress(
-				1
-			)
-
-			break
-		end
+	do
+		--------------------------------------------------
+		-- BEAST
+		--------------------------------------------------
 
 		if self:IsBeastClose() then
 			self:LeaveTrigger()
@@ -1940,57 +2101,341 @@ function AutoPlay:HackComputer(
 		end
 
 		--------------------------------------------------
-		-- IF WE SOMEHOW LOST THE TRIGGER,
-		-- STOP AND RETRY IN MAIN LOOP.
+		-- SOMEONE TOOK THIS SPOT
 		--------------------------------------------------
 
-		local OnTrigger =
-			self:GetStatValue(
-				"OnTrigger"
-			)
-
-		if OnTrigger == false then
+		if self:IsTriggerOccupied(
+			Trigger
+		)
+		then
 			self:LeaveTrigger()
 
 			return false
 		end
 
-		self:_SetProgress(
-			self:GetActionProgress()
+		--------------------------------------------------
+		-- MOVE MUCH CLOSER
+		--------------------------------------------------
+
+		self:_SetStatus(
+			"Positioning"
 		)
 
-		self:HandleSkillCheck()
-
-		if os.clock()
-			- Started
-			>= self.Config.ComputerTimeout
-		then
-			self:_SetStatus(
-				"Hack timeout"
+		local Settled,
+			SettleReason =
+			self:SettleIntoTrigger(
+				Trigger,
+				Token
 			)
 
-			break
+		if not Settled then
+			if SettleReason
+				== "Threat"
+			then
+				self:HideFromBeast(
+					Token
+				)
+
+				return false
+			end
+
+			--------------------------------------------------
+			-- TRY NAVIGATION AGAIN
+			--------------------------------------------------
+
+			self:_SetStatus(
+				"Repositioning"
+			)
+
+			self:NavigateWithDoors(
+				Trigger,
+				Token,
+				{
+					Computer =
+						Computer,
+
+					Trigger =
+						Trigger,
+
+					ProjectToGround =
+						true,
+				}
+			)
+
+			task.wait(
+				0.1
+			)
+
+			continue
 		end
 
-		task.wait(
-			0.05
+		--------------------------------------------------
+		-- ERROR BEFORE START?
+		--------------------------------------------------
+
+		if self:IsComputerError(
+			Computer
 		)
+		then
+			self:_SetStatus(
+				"Computer error - recovering"
+			)
+
+			self:LeaveTrigger()
+
+			local Cleared,
+				ErrorReason =
+				self:WaitForComputerErrorClear(
+					Computer,
+					Token
+				)
+
+			if not Cleared
+				and ErrorReason
+					== "Threat"
+			then
+				self:HideFromBeast(
+					Token
+				)
+
+				return false
+			end
+
+			task.wait(
+				self.Config.ErrorRetryDelay
+			)
+		end
+
+		--------------------------------------------------
+		-- START HACK
+		--------------------------------------------------
+
+		self:_SetStatus(
+			"Hacking"
+		)
+
+		if not self:StartAction(
+			Trigger,
+			Token
+		)
+		then
+			task.wait(
+				self.Config.HackRetryDelay
+			)
+
+			continue
+		end
+
+		local AttemptStarted =
+			os.clock()
+
+		local LastProgress =
+			self:GetActionProgress()
+
+		local LastProgressTime =
+			os.clock()
+
+		local RetryHack =
+			false
+
+		--------------------------------------------------
+		-- CURRENT HACK ATTEMPT
+		--------------------------------------------------
+
+		while self.Config.Enabled
+			and Token
+				== self._runToken
+			and not self:IsComputerDone(
+				Computer
+			)
+		do
+			--------------------------------------------------
+			-- BEAST
+			--------------------------------------------------
+
+			if self:IsBeastClose() then
+				self:LeaveTrigger()
+
+				self:HideFromBeast(
+					Token
+				)
+
+				return false
+			end
+
+			--------------------------------------------------
+			-- ERROR SCREEN
+			--------------------------------------------------
+
+			if self:IsComputerError(
+				Computer
+			)
+			then
+				self:_SetStatus(
+					"Computer error - retrying"
+				)
+
+				self:LeaveTrigger()
+
+				self:WaitForComputerErrorClear(
+					Computer,
+					Token
+				)
+
+				task.wait(
+					self.Config.ErrorRetryDelay
+				)
+
+				RetryHack =
+					true
+
+				break
+			end
+
+			--------------------------------------------------
+			-- SKILL CHECK
+			--------------------------------------------------
+
+			self:HandleSkillCheck()
+
+			--------------------------------------------------
+			-- PROGRESS
+			--------------------------------------------------
+
+			local Progress =
+				self:GetActionProgress()
+
+			self:_SetProgress(
+				Progress
+			)
+
+			if Progress
+				> LastProgress
+					+ self.Config.HackProgressEpsilon
+			then
+				LastProgress =
+					Progress
+
+				LastProgressTime =
+					os.clock()
+			end
+
+			--------------------------------------------------
+			-- LOST TRIGGER
+			--------------------------------------------------
+
+			local OnTrigger =
+				self:GetStatValue(
+					"OnTrigger"
+				)
+
+			if OnTrigger == false then
+				self:_SetStatus(
+					"Lost trigger - retrying"
+				)
+
+				self:LeaveTrigger()
+
+				RetryHack =
+					true
+
+				break
+			end
+
+			--------------------------------------------------
+			-- PROGRESS STALLED
+			--------------------------------------------------
+
+			if os.clock()
+					- LastProgressTime
+					>= self.Config.HackStallRetryTime
+			then
+				self:_SetStatus(
+					"Hack stalled - retrying"
+				)
+
+				self:LeaveTrigger()
+
+				task.wait(
+					self.Config.HackRetryDelay
+				)
+
+				RetryHack =
+					true
+
+				break
+			end
+
+			--------------------------------------------------
+			-- ATTEMPT TIMEOUT
+			--------------------------------------------------
+
+			if os.clock()
+					- AttemptStarted
+					>= self.Config.ComputerTimeout
+			then
+				self:_SetStatus(
+					"Hack timeout - retrying"
+				)
+
+				self:LeaveTrigger()
+
+				task.wait(
+					self.Config.HackRetryDelay
+				)
+
+				RetryHack =
+					true
+
+				break
+			end
+
+			task.wait(
+				0.05
+			)
+		end
+
+		--------------------------------------------------
+		-- FINISHED
+		--------------------------------------------------
+
+		if self:IsComputerDone(
+			Computer
+		)
+		then
+			self:LeaveTrigger()
+
+			self:_SetProgress(
+				1
+			)
+
+			self:_SetStatus(
+				"Computer complete"
+			)
+
+			return true
+		end
+
+		--------------------------------------------------
+		-- CLEAN RETRY
+		--------------------------------------------------
+
+		if RetryHack then
+			self:LeaveTrigger()
+
+			task.wait(
+				self.Config.HackRetryDelay
+			)
+
+			continue
+		end
 	end
 
 	self:LeaveTrigger()
 
-	if self:IsComputerDone(
+	return self:IsComputerDone(
 		Computer
 	)
-	then
-		self:_SetStatus(
-			"Computer complete"
-		)
-
-		return true
-	end
-
-	return false
 end
 
 --------------------------------------------------
@@ -2104,10 +2549,6 @@ function AutoPlay:UseExit(
 
 		return false
 	end
-
-	--------------------------------------------------
-	-- SAME TRIGGER SETTLE FIX FOR EXIT
-	--------------------------------------------------
 
 	local Settled,
 		SettleReason =
@@ -2264,6 +2705,10 @@ function AutoPlay:_Run(
 		and Token
 			== self._runToken
 	do
+		--------------------------------------------------
+		-- BEAST PLAYER
+		--------------------------------------------------
+
 		if self:IsBeast(
 			LocalPlayer
 		)
@@ -2279,6 +2724,10 @@ function AutoPlay:_Run(
 			continue
 		end
 
+		--------------------------------------------------
+		-- BEAST NEARBY
+		--------------------------------------------------
+
 		if self:IsBeastClose() then
 			self:HideFromBeast(
 				Token
@@ -2286,6 +2735,10 @@ function AutoPlay:_Run(
 
 			continue
 		end
+
+		--------------------------------------------------
+		-- COMPUTERS
+		--------------------------------------------------
 
 		if not self:AreComputersDone() then
 			local Computer,
@@ -2312,6 +2765,10 @@ function AutoPlay:_Run(
 
 			continue
 		end
+
+		--------------------------------------------------
+		-- EXIT
+		--------------------------------------------------
 
 		local Exit =
 			self:GetNearestExit()
@@ -2444,10 +2901,6 @@ function AutoPlay:CreateUI(
 			Text =
 				"Objective: None",
 		})
-
-	--------------------------------------------------
-	-- PROGRESS BAR
-	--------------------------------------------------
 
 	Section:AddCustom({
 		Height = 48,
@@ -2622,10 +3075,6 @@ function AutoPlay:CreateUI(
 			end,
 	})
 
-	--------------------------------------------------
-	-- AUTO PLAY
-	--------------------------------------------------
-
 	Section:AddToggle({
 		Name =
 			"Auto Play",
@@ -2642,10 +3091,6 @@ function AutoPlay:CreateUI(
 				)
 			end,
 	})
-
-	--------------------------------------------------
-	-- BEAST DISTANCE
-	--------------------------------------------------
 
 	Section:AddSlider({
 		Name =
@@ -2674,10 +3119,6 @@ function AutoPlay:CreateUI(
 					Value + 7
 			end,
 	})
-
-	--------------------------------------------------
-	-- HIDE DEPTH
-	--------------------------------------------------
 
 	Section:AddSlider({
 		Name =
