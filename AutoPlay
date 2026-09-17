@@ -1,9 +1,22 @@
 local Players = game:GetService("Players")
 local PathfindingService = game:GetService("PathfindingService")
 local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
 local LocalPlayer = Players.LocalPlayer
+
+local RemoteEvent =
+	ReplicatedStorage:WaitForChild(
+		"RemoteEvent"
+	)
+
+local TempPlayerStatsModule =
+	require(
+		LocalPlayer:WaitForChild(
+			"TempPlayerStatsModule"
+		)
+	)
 
 local AutoPlay = {}
 
@@ -19,16 +32,20 @@ AutoPlay.Config = {
 	--------------------------------------------------
 
 	AgentRadius = 2,
+
 	AgentHeight = 5,
+
 	AgentCanJump = true,
 
 	WaypointSpacing = 3,
 
-	ArrivalDistance = 3.5,
+	WaypointArrivalDistance = 3,
+
+	FinalArrivalDistance = 3.5,
 
 	WaypointTimeout = 4,
 
-	PathRetries = 3,
+	PathRetries = 4,
 
 	--------------------------------------------------
 	-- COMPUTERS
@@ -59,9 +76,15 @@ AutoPlay.Config = {
 	-- DOORS
 	--------------------------------------------------
 
-	DoorSearchRadius = 12,
+	DoorRouteDistance = 10,
 
-	DoorOpenTimeout = 3,
+	DoorOpenTimeout = 2.5,
+
+	--------------------------------------------------
+	-- EXIT
+	--------------------------------------------------
+
+	ExitOpenTimeout = 15,
 }
 
 --------------------------------------------------
@@ -72,123 +95,119 @@ AutoPlay._runToken = 0
 
 AutoPlay._moveGeneration = 0
 
-AutoPlay._initialized = false
+AutoPlay._currentTrigger = nil
 
 AutoPlay._statusLabel = nil
+
 AutoPlay._objectiveLabel = nil
 
 AutoPlay._progressFill = nil
+
 AutoPlay._progressLabel = nil
 
-AutoPlay._handlers = {
-	UseComputer = nil,
-	StopComputer = nil,
-	OpenDoor = nil,
-	OpenExit = nil,
-	Escape = nil,
-
-	GetProgress = nil,
-}
+AutoPlay._initialized = false
 
 --------------------------------------------------
--- INIT
+-- HELPERS
 --------------------------------------------------
 
-function AutoPlay:Init(Handlers)
-	if self._initialized then
-		return
-	end
-
-	self._initialized = true
-
-	Handlers =
-		Handlers or {}
-
-	for Name, Callback
-		in pairs(
-			Handlers
-		)
-	do
-		if self._handlers[Name]
-				~= nil
-			or type(Callback)
-				== "function"
-		then
-			self._handlers[Name] =
-				Callback
-		end
-	end
-end
-
---------------------------------------------------
--- HANDLERS
---------------------------------------------------
-
-function AutoPlay:SetHandler(
-	Name,
-	Callback
+local function ColorsMatch(
+	A,
+	B
 )
-	self._handlers[Name] =
-		Callback
+	local Tolerance =
+		1 / 255
+
+	return math.abs(
+		A.R - B.R
+	) <= Tolerance
+		and math.abs(
+			A.G - B.G
+		) <= Tolerance
+		and math.abs(
+			A.B - B.B
+		) <= Tolerance
 end
 
-function AutoPlay:_Call(
-	Name,
-	...
+local function DistanceToSegment(
+	Point,
+	A,
+	B
 )
-	local Callback =
-		self._handlers[
-			Name
-		]
+	local AB =
+		B - A
 
-	if type(Callback)
-		~= "function"
-	then
-		return nil
-	end
-
-	local Success, Result =
-		pcall(
-			Callback,
-			...
+	local LengthSquared =
+		AB:Dot(
+			AB
 		)
 
-	if not Success then
-		warn(
-			"[AutoPlay]",
-			Name,
-			Result
-		)
-
-		return nil
+	if LengthSquared <= 0 then
+		return (
+			Point - A
+		).Magnitude,
+			0
 	end
 
-	return Result
+	local Alpha =
+		(
+			Point - A
+		):Dot(
+			AB
+		)
+		/ LengthSquared
+
+	Alpha =
+		math.clamp(
+			Alpha,
+			0,
+			1
+		)
+
+	local Closest =
+		A
+		+ AB * Alpha
+
+	return (
+		Point
+		- Closest
+	).Magnitude,
+		Alpha
 end
 
 --------------------------------------------------
--- STATUS
+-- UI STATUS
 --------------------------------------------------
 
-function AutoPlay:_SetStatus(Text)
+function AutoPlay:_SetStatus(
+	Text
+)
 	if self._statusLabel then
 		self._statusLabel:SetText(
 			"Status: "
-				.. tostring(Text)
+				.. tostring(
+					Text
+				)
 		)
 	end
 end
 
-function AutoPlay:_SetObjective(Text)
+function AutoPlay:_SetObjective(
+	Text
+)
 	if self._objectiveLabel then
 		self._objectiveLabel:SetText(
 			"Objective: "
-				.. tostring(Text)
+				.. tostring(
+					Text
+				)
 		)
 	end
 end
 
-function AutoPlay:_SetProgress(Value)
+function AutoPlay:_SetProgress(
+	Value
+)
 	Value =
 		math.clamp(
 			tonumber(Value)
@@ -384,23 +403,145 @@ function AutoPlay:IsBeastClose()
 end
 
 --------------------------------------------------
--- COMPUTER DONE COLOR
+-- INTERACTION
 --------------------------------------------------
 
-local function ColorMatches(
-	A,
-	B
-)
-	local Tolerance =
-		1 / 255
+function AutoPlay:LeaveTrigger()
+	RemoteEvent:FireServer(
+		"Input",
+		"Action",
+		false
+	)
 
-	return math.abs(A.R - B.R)
-			<= Tolerance
-		and math.abs(A.G - B.G)
-			<= Tolerance
-		and math.abs(A.B - B.B)
-			<= Tolerance
+	if self._currentTrigger then
+		local Event =
+			self._currentTrigger:FindFirstChild(
+				"Event"
+			)
+
+		if Event then
+			RemoteEvent:FireServer(
+				"Input",
+				"Trigger",
+				false,
+				Event
+			)
+		end
+	end
+
+	self._currentTrigger =
+		nil
 end
+
+function AutoPlay:EnterTrigger(
+	Trigger
+)
+	if not Trigger then
+		return false
+	end
+
+	local Event =
+		Trigger:FindFirstChild(
+			"Event"
+		)
+
+	if not Event then
+		return false
+	end
+
+	if self._currentTrigger
+		and self._currentTrigger
+			~= Trigger
+	then
+		self:LeaveTrigger()
+	end
+
+	self._currentTrigger =
+		Trigger
+
+	RemoteEvent:FireServer(
+		"Input",
+		"Trigger",
+		true,
+		Event
+	)
+
+	task.wait(
+		0.08
+	)
+
+	return true
+end
+
+function AutoPlay:StartAction(
+	Trigger
+)
+	if not self:EnterTrigger(
+		Trigger
+	)
+	then
+		return false
+	end
+
+	RemoteEvent:FireServer(
+		"Input",
+		"Action",
+		true
+	)
+
+	return true
+end
+
+function AutoPlay:PulseAction(
+	Trigger
+)
+	if not self:StartAction(
+		Trigger
+	)
+	then
+		return false
+	end
+
+	task.wait(
+		0.12
+	)
+
+	self:LeaveTrigger()
+
+	return true
+end
+
+--------------------------------------------------
+-- PROGRESS
+--------------------------------------------------
+
+function AutoPlay:GetActionProgress()
+	if not TempPlayerStatsModule
+		or type(
+			TempPlayerStatsModule.GetValue
+		) ~= "function"
+	then
+		return 0
+	end
+
+	local Success, Value =
+		pcall(function()
+			return TempPlayerStatsModule.GetValue(
+				"ActionProgress"
+			)
+		end)
+
+	if not Success then
+		return 0
+	end
+
+	return tonumber(Value)
+		or 0
+end
+
+--------------------------------------------------
+-- COMPUTER
+--------------------------------------------------
 
 function AutoPlay:IsComputerDone(
 	Computer
@@ -422,15 +563,11 @@ function AutoPlay:IsComputerDone(
 		return false
 	end
 
-	return ColorMatches(
+	return ColorsMatch(
 		Screen.Color,
 		self.Config.ComputerDoneColor
 	)
 end
-
---------------------------------------------------
--- COMPUTERS
---------------------------------------------------
 
 function AutoPlay:GetComputers()
 	local Computers = {}
@@ -453,14 +590,14 @@ function AutoPlay:GetComputers()
 	return Computers
 end
 
---------------------------------------------------
--- TRIGGERS
---------------------------------------------------
-
 function AutoPlay:GetComputerTriggers(
 	Computer
 )
-	local Results = {}
+	local Triggers = {}
+
+	if not Computer then
+		return Triggers
+	end
 
 	for Index = 1, 3 do
 		local Trigger =
@@ -475,14 +612,30 @@ function AutoPlay:GetComputerTriggers(
 				"BasePart"
 			)
 		then
-			table.insert(
-				Results,
-				Trigger
-			)
+			local ActionSign =
+				Trigger:FindFirstChild(
+					"ActionSign"
+				)
+
+			local Event =
+				Trigger:FindFirstChild(
+					"Event"
+				)
+
+			if ActionSign
+				and Event
+				and ActionSign.Value
+					== 20
+			then
+				table.insert(
+					Triggers,
+					Trigger
+				)
+			end
 		end
 	end
 
-	return Results
+	return Triggers
 end
 
 --------------------------------------------------
@@ -543,10 +696,6 @@ function AutoPlay:IsTriggerOccupied(
 		nil
 end
 
---------------------------------------------------
--- AVAILABLE TRIGGERS
---------------------------------------------------
-
 function AutoPlay:GetAvailableTriggers(
 	Computer
 )
@@ -576,7 +725,7 @@ function AutoPlay:GetAvailableTriggers(
 end
 
 --------------------------------------------------
--- NEAREST COMPUTER/TRIGGER
+-- COMPUTER TARGET
 --------------------------------------------------
 
 function AutoPlay:GetNearestComputerTarget()
@@ -589,6 +738,7 @@ function AutoPlay:GetNearestComputerTarget()
 	end
 
 	local BestComputer = nil
+
 	local BestTrigger = nil
 
 	local BestDistance =
@@ -603,14 +753,11 @@ function AutoPlay:GetNearestComputerTarget()
 			Computer
 		)
 		then
-			local Triggers =
-				self:GetAvailableTriggers(
-					Computer
-				)
-
 			for _, Trigger
 				in ipairs(
-					Triggers
+					self:GetAvailableTriggers(
+						Computer
+					)
 				)
 			do
 				local Distance =
@@ -637,6 +784,29 @@ function AutoPlay:GetNearestComputerTarget()
 
 	return BestComputer,
 		BestTrigger
+end
+
+function AutoPlay:AreComputersDone()
+	local Found =
+		false
+
+	for _, Computer
+		in ipairs(
+			self:GetComputers()
+		)
+	do
+		Found =
+			true
+
+		if not self:IsComputerDone(
+			Computer
+		)
+		then
+			return false
+		end
+	end
+
+	return Found
 end
 
 --------------------------------------------------
@@ -688,63 +858,42 @@ function AutoPlay:GetDoorTrigger(
 	return nil
 end
 
---------------------------------------------------
--- DISTANCE TO LINE
---------------------------------------------------
-
-local function DistanceToSegment(
-	Point,
-	A,
-	B
+function AutoPlay:IsDoorOpen(
+	Door
 )
-	local AB =
-		B - A
-
-	local LengthSquared =
-		AB:Dot(
-			AB
+	local Trigger =
+		self:GetDoorTrigger(
+			Door
 		)
 
-	if LengthSquared <= 0 then
-		return (
-			Point - A
-		).Magnitude
+	if not Trigger then
+		return true
 	end
 
-	local Alpha =
-		(
-			Point - A
-		):Dot(
-			AB
-		)
-		/ LengthSquared
-
-	Alpha =
-		math.clamp(
-			Alpha,
-			0,
-			1
+	local ActionSign =
+		Trigger:FindFirstChild(
+			"ActionSign"
 		)
 
-	local Closest =
-		A
-		+ AB * Alpha
+	if not ActionSign then
+		return false
+	end
 
-	return (
-		Point - Closest
-	).Magnitude,
-		Alpha
+	--------------------------------------------------
+	-- 10 = OPEN DOOR
+	-- 11 = CLOSE DOOR
+	--------------------------------------------------
+
+	return ActionSign.Value
+		== 11
 end
-
---------------------------------------------------
--- FIND DOOR ALONG ROUTE
---------------------------------------------------
 
 function AutoPlay:FindDoorOnRoute(
 	StartPosition,
 	TargetPosition
 )
 	local BestDoor = nil
+
 	local BestTrigger = nil
 
 	local BestAlpha =
@@ -755,35 +904,40 @@ function AutoPlay:FindDoorOnRoute(
 			self:GetDoors()
 		)
 	do
-		local Trigger =
-			self:GetDoorTrigger(
-				Door
-			)
-
-		if Trigger then
-			local Distance,
-				Alpha =
-				DistanceToSegment(
-					Trigger.Position,
-					StartPosition,
-					TargetPosition
+		if not self:IsDoorOpen(
+			Door
+		)
+		then
+			local Trigger =
+				self:GetDoorTrigger(
+					Door
 				)
 
-			if Distance
-				<= self.Config.DoorSearchRadius
-				and Alpha > 0.05
-				and Alpha < 0.95
-				and Alpha
-					< BestAlpha
-			then
-				BestDoor =
-					Door
+			if Trigger then
+				local Distance,
+					Alpha =
+					DistanceToSegment(
+						Trigger.Position,
+						StartPosition,
+						TargetPosition
+					)
 
-				BestTrigger =
-					Trigger
+				if Distance
+					<= self.Config.DoorRouteDistance
+					and Alpha > 0.03
+					and Alpha < 0.97
+					and Alpha
+						< BestAlpha
+				then
+					BestDoor =
+						Door
 
-				BestAlpha =
-					Alpha
+					BestTrigger =
+						Trigger
+
+					BestAlpha =
+						Alpha
+				end
 			end
 		end
 	end
@@ -793,50 +947,7 @@ function AutoPlay:FindDoorOnRoute(
 end
 
 --------------------------------------------------
--- DOOR OPEN CHECK
---------------------------------------------------
-
-function AutoPlay:IsDoorOpen(
-	Door
-)
-	if not Door then
-		return true
-	end
-
-	local OpenAttribute =
-		Door:GetAttribute(
-			"Open"
-		)
-
-	if OpenAttribute ~= nil then
-		return OpenAttribute
-			== true
-	end
-
-	local Trigger =
-		self:GetDoorTrigger(
-			Door
-		)
-
-	if Trigger then
-		local ActionSign =
-			Trigger:FindFirstChild(
-				"ActionSign"
-			)
-
-		-- 10 = Open Door
-		-- 11 = Close Door
-		if ActionSign then
-			return ActionSign.Value
-				== 11
-		end
-	end
-
-	return false
-end
-
---------------------------------------------------
--- PATH CREATION
+-- PATH
 --------------------------------------------------
 
 function AutoPlay:CreatePath(
@@ -880,7 +991,7 @@ function AutoPlay:CreatePath(
 end
 
 --------------------------------------------------
--- CANCEL MOVE
+-- CANCEL MOVEMENT
 --------------------------------------------------
 
 function AutoPlay:CancelMove()
@@ -902,26 +1013,19 @@ function AutoPlay:CancelMove()
 end
 
 --------------------------------------------------
--- CHECK MOVEMENT
+-- MOVEMENT STATE
 --------------------------------------------------
 
-function AutoPlay:_CheckMovementState(
+function AutoPlay:_CheckMoveState(
 	Token,
 	Generation,
 	Options
 )
-	if not self.Config.Enabled then
-		return false,
-			"Stopped"
-	end
-
-	if Token ~= self._runToken then
-		return false,
-			"Stopped"
-	end
-
-	if Generation
-		~= self._moveGeneration
+	if not self.Config.Enabled
+		or Token
+			~= self._runToken
+		or Generation
+			~= self._moveGeneration
 	then
 		return false,
 			"Stopped"
@@ -955,8 +1059,7 @@ function AutoPlay:_CheckMovementState(
 		end
 	end
 
-	return true,
-		nil
+	return true
 end
 
 --------------------------------------------------
@@ -999,7 +1102,7 @@ function AutoPlay:_FollowWaypoint(
 	while true do
 		local Valid,
 			Reason =
-			self:_CheckMovementState(
+			self:_CheckMoveState(
 				Token,
 				Generation,
 				Options
@@ -1010,21 +1113,19 @@ function AutoPlay:_FollowWaypoint(
 				Reason
 		end
 
-		if not Root.Parent
-			or not Humanoid.Parent
-		then
+		Root =
+			self:GetRoot()
+
+		if not Root then
 			return false,
 				"NoCharacter"
 		end
 
-		local Distance =
-			(
-				Root.Position
-				- Waypoint.Position
-			).Magnitude
-
-		if Distance
-			<= self.Config.ArrivalDistance
+		if (
+			Root.Position
+			- Waypoint.Position
+		).Magnitude
+			<= self.Config.WaypointArrivalDistance
 		then
 			return true
 		end
@@ -1044,11 +1145,11 @@ function AutoPlay:_FollowWaypoint(
 end
 
 --------------------------------------------------
--- WALK DIRECTLY
+-- WALK DIRECT
 --------------------------------------------------
 
 function AutoPlay:_WalkDirect(
-	Position,
+	TargetPosition,
 	Token,
 	Generation,
 	Options
@@ -1067,7 +1168,7 @@ function AutoPlay:_WalkDirect(
 	end
 
 	Humanoid:MoveTo(
-		Position
+		TargetPosition
 	)
 
 	local Started =
@@ -1075,13 +1176,13 @@ function AutoPlay:_WalkDirect(
 
 	while (
 		Root.Position
-		- Position
+		- TargetPosition
 	).Magnitude
-		> self.Config.ArrivalDistance
+		> self.Config.FinalArrivalDistance
 	do
 		local Valid,
 			Reason =
-			self:_CheckMovementState(
+			self:_CheckMoveState(
 				Token,
 				Generation,
 				Options
@@ -1090,6 +1191,14 @@ function AutoPlay:_WalkDirect(
 		if not Valid then
 			return false,
 				Reason
+		end
+
+		Root =
+			self:GetRoot()
+
+		if not Root then
+			return false,
+				"NoCharacter"
 		end
 
 		if os.clock()
@@ -1137,7 +1246,7 @@ function AutoPlay:OpenDoor(
 	)
 
 	--------------------------------------------------
-	-- WALK TO TRIGGER
+	-- GET TO DOOR TRIGGER
 	--------------------------------------------------
 
 	local Path =
@@ -1189,23 +1298,20 @@ function AutoPlay:OpenDoor(
 	end
 
 	--------------------------------------------------
-	-- AUTHORIZED DOOR ACTION
+	-- OPEN
 	--------------------------------------------------
 
-	self:_Call(
-		"OpenDoor",
-		Door,
+	self:PulseAction(
 		Trigger
 	)
-
-	--------------------------------------------------
-	-- WAIT FOR DOOR
-	--------------------------------------------------
 
 	local Started =
 		os.clock()
 
-	repeat
+	while os.clock()
+		- Started
+		< self.Config.DoorOpenTimeout
+	do
 		if self:IsDoorOpen(
 			Door
 		)
@@ -1221,10 +1327,7 @@ function AutoPlay:OpenDoor(
 		task.wait(
 			0.05
 		)
-
-	until os.clock()
-		- Started
-		>= self.Config.DoorOpenTimeout
+	end
 
 	return self:IsDoorOpen(
 		Door
@@ -1232,7 +1335,7 @@ function AutoPlay:OpenDoor(
 end
 
 --------------------------------------------------
--- SMOOTH PATHFINDING
+-- MOVE TO OBJECTIVE
 --------------------------------------------------
 
 function AutoPlay:MoveTo(
@@ -1258,7 +1361,7 @@ function AutoPlay:MoveTo(
 	end
 
 	--------------------------------------------------
-	-- Uses Humanoid.WalkSpeed naturally.
+	-- USES CURRENT HUMANOID.WALKSPEED
 	--------------------------------------------------
 
 	self:CancelMove()
@@ -1269,17 +1372,12 @@ function AutoPlay:MoveTo(
 	local TargetPosition =
 		TargetCFrame.Position
 
-	local Retry =
-		0
-
-	while Retry
-		< self.Config.PathRetries
+	for Attempt = 1,
+		self.Config.PathRetries
 	do
-		Retry += 1
-
 		local Valid,
 			Reason =
-			self:_CheckMovementState(
+			self:_CheckMoveState(
 				Token,
 				Generation,
 				Options
@@ -1299,74 +1397,8 @@ function AutoPlay:MoveTo(
 		end
 
 		--------------------------------------------------
-		-- COMPUTE PATH
+		-- CHECK FOR CLOSED SINGLEDOOR
 		--------------------------------------------------
-
-		local Path =
-			self:CreatePath(
-				Root.Position,
-				TargetPosition
-			)
-
-		if Path then
-			local FailedReason =
-				nil
-
-			for _, Waypoint
-				in ipairs(
-					Path:GetWaypoints()
-				)
-			do
-				local Success,
-					WaypointReason =
-					self:_FollowWaypoint(
-						Waypoint,
-						Token,
-						Generation,
-						Options
-					)
-
-				if not Success then
-					FailedReason =
-						WaypointReason
-
-					break
-				end
-			end
-
-			if not FailedReason then
-				--------------------------------------------------
-				-- FINAL APPROACH
-				--------------------------------------------------
-
-				return self:_WalkDirect(
-					TargetPosition,
-					Token,
-					Generation,
-					Options
-				)
-			end
-
-			if FailedReason
-				~= "Blocked"
-			then
-				return false,
-					FailedReason
-			end
-		end
-
-		--------------------------------------------------
-		-- PATH FAILED / BLOCKED.
-		-- LOOK FOR SINGLEDOOR.
-		--------------------------------------------------
-
-		Root =
-			self:GetRoot()
-
-		if not Root then
-			return false,
-				"NoCharacter"
-		end
 
 		local Door,
 			DoorTrigger =
@@ -1377,9 +1409,6 @@ function AutoPlay:MoveTo(
 
 		if Door
 			and DoorTrigger
-			and not self:IsDoorOpen(
-				Door
-			)
 		then
 			local Opened,
 				DoorReason =
@@ -1390,12 +1419,10 @@ function AutoPlay:MoveTo(
 					Generation
 				)
 
-			if not Opened
-				and DoorReason
-					~= nil
-			then
+			if not Opened then
 				if DoorReason
-					~= "Blocked"
+					and DoorReason
+						~= "Blocked"
 				then
 					return false,
 						DoorReason
@@ -1403,14 +1430,22 @@ function AutoPlay:MoveTo(
 			end
 
 			task.wait(
-				0.1
+				0.08
 			)
-		else
-			--------------------------------------------------
-			-- DIRECT FALLBACK
-			--------------------------------------------------
+		end
 
-			local Success,
+		--------------------------------------------------
+		-- CREATE PATH
+		--------------------------------------------------
+
+		local Path =
+			self:CreatePath(
+				Root.Position,
+				TargetPosition
+			)
+
+		if not Path then
+			local Direct,
 				DirectReason =
 				self:_WalkDirect(
 					TargetPosition,
@@ -1419,7 +1454,7 @@ function AutoPlay:MoveTo(
 					Options
 				)
 
-			if Success then
+			if Direct then
 				return true,
 					"Reached"
 			end
@@ -1430,6 +1465,64 @@ function AutoPlay:MoveTo(
 				return false,
 					DirectReason
 			end
+
+			continue
+		end
+
+		--------------------------------------------------
+		-- FOLLOW
+		--------------------------------------------------
+
+		local FailedReason =
+			nil
+
+		for _, Waypoint
+			in ipairs(
+				Path:GetWaypoints()
+			)
+		do
+			local Success,
+				WaypointReason =
+				self:_FollowWaypoint(
+					Waypoint,
+					Token,
+					Generation,
+					Options
+				)
+
+			if not Success then
+				FailedReason =
+					WaypointReason
+
+				break
+			end
+		end
+
+		if not FailedReason then
+			local FinalSuccess,
+				FinalReason =
+				self:_WalkDirect(
+					TargetPosition,
+					Token,
+					Generation,
+					Options
+				)
+
+			if FinalSuccess then
+				return true,
+					"Reached"
+			end
+
+			FailedReason =
+				FinalReason
+		end
+
+		if FailedReason
+			and FailedReason
+				~= "Blocked"
+		then
+			return false,
+				FailedReason
 		end
 	end
 
@@ -1438,7 +1531,7 @@ function AutoPlay:MoveTo(
 end
 
 --------------------------------------------------
--- TWEEN BELOW WHEN BEAST CLOSE
+-- BEAST HIDE
 --------------------------------------------------
 
 function AutoPlay:HideFromBeast(
@@ -1458,9 +1551,7 @@ function AutoPlay:HideFromBeast(
 
 	self:CancelMove()
 
-	self:_Call(
-		"StopComputer"
-	)
+	self:LeaveTrigger()
 
 	local ReturnCFrame =
 		Root.CFrame
@@ -1477,18 +1568,11 @@ function AutoPlay:HideFromBeast(
 		"Beast nearby - hiding"
 	)
 
-	--------------------------------------------------
-	-- TEMPORARILY STABILIZE CHARACTER
-	--------------------------------------------------
-
-	local WasAnchored =
+	local OriginalAnchored =
 		Root.Anchored
 
-	local WasAutoRotate =
+	local OriginalAutoRotate =
 		Humanoid.AutoRotate
-
-	Humanoid.AutoRotate =
-		false
 
 	Root.AssemblyLinearVelocity =
 		Vector3.zero
@@ -1496,11 +1580,14 @@ function AutoPlay:HideFromBeast(
 	Root.AssemblyAngularVelocity =
 		Vector3.zero
 
+	Humanoid.AutoRotate =
+		false
+
 	Root.Anchored =
 		true
 
 	--------------------------------------------------
-	-- DOWN TWEEN
+	-- TWEEN BELOW
 	--------------------------------------------------
 
 	local DownTween =
@@ -1522,7 +1609,7 @@ function AutoPlay:HideFromBeast(
 	DownTween.Completed:Wait()
 
 	--------------------------------------------------
-	-- WAIT UNTIL SAFE
+	-- WAIT UNTIL BEAST LEAVES
 	--------------------------------------------------
 
 	while self.Config.Enabled
@@ -1536,15 +1623,19 @@ function AutoPlay:HideFromBeast(
 		)
 	end
 
+	if not Root.Parent then
+		return false
+	end
+
 	if not self.Config.Enabled
 		or Token
 			~= self._runToken
 	then
 		Root.Anchored =
-			WasAnchored
+			OriginalAnchored
 
 		Humanoid.AutoRotate =
-			WasAutoRotate
+			OriginalAutoRotate
 
 		return false
 	end
@@ -1554,7 +1645,7 @@ function AutoPlay:HideFromBeast(
 	)
 
 	--------------------------------------------------
-	-- RETURN TWEEN
+	-- TWEEN BACK
 	--------------------------------------------------
 
 	local UpTween =
@@ -1576,30 +1667,12 @@ function AutoPlay:HideFromBeast(
 	UpTween.Completed:Wait()
 
 	Root.Anchored =
-		WasAnchored
+		OriginalAnchored
 
 	Humanoid.AutoRotate =
-		WasAutoRotate
+		OriginalAutoRotate
 
 	return true
-end
-
---------------------------------------------------
--- PROGRESS
---------------------------------------------------
-
-function AutoPlay:GetActionProgress()
-	local Value =
-		self:_Call(
-			"GetProgress"
-		)
-
-	return math.clamp(
-		tonumber(Value)
-			or 0,
-		0,
-		1
-	)
 end
 
 --------------------------------------------------
@@ -1611,6 +1684,12 @@ function AutoPlay:HackComputer(
 	Trigger,
 	Token
 )
+	if not Computer
+		or not Trigger
+	then
+		return false
+	end
+
 	if self:IsComputerDone(
 		Computer
 	)
@@ -1633,10 +1712,6 @@ function AutoPlay:HackComputer(
 		"Walking to computer"
 	)
 
-	--------------------------------------------------
-	-- WALK TO TRIGGER USING CURRENT WALKSPEED
-	--------------------------------------------------
-
 	local Arrived,
 		Reason =
 		self:MoveTo(
@@ -1654,7 +1729,9 @@ function AutoPlay:HackComputer(
 		)
 
 	if not Arrived then
-		if Reason == "Threat" then
+		if Reason
+			== "Threat"
+		then
 			self:HideFromBeast(
 				Token
 			)
@@ -1690,22 +1767,19 @@ function AutoPlay:HackComputer(
 	end
 
 	--------------------------------------------------
-	-- BEGIN AUTHORIZED COMPUTER ACTION
+	-- HACK
 	--------------------------------------------------
 
 	self:_SetStatus(
 		"Hacking"
 	)
 
-	self:_Call(
-		"UseComputer",
-		Computer,
+	if not self:StartAction(
 		Trigger
 	)
-
-	self:_SetProgress(
-		0
-	)
+	then
+		return false
+	end
 
 	while self.Config.Enabled
 		and Token
@@ -1723,9 +1797,7 @@ function AutoPlay:HackComputer(
 		end
 
 		if self:IsBeastClose() then
-			self:_Call(
-				"StopComputer"
-			)
+			self:LeaveTrigger()
 
 			self:HideFromBeast(
 				Token
@@ -1734,11 +1806,8 @@ function AutoPlay:HackComputer(
 			return false
 		end
 
-		local Progress =
-			self:GetActionProgress()
-
 		self:_SetProgress(
-			Progress
+			self:GetActionProgress()
 		)
 
 		task.wait(
@@ -1746,9 +1815,7 @@ function AutoPlay:HackComputer(
 		)
 	end
 
-	self:_Call(
-		"StopComputer"
-	)
+	self:LeaveTrigger()
 
 	if self:IsComputerDone(
 		Computer
@@ -1765,33 +1832,6 @@ function AutoPlay:HackComputer(
 end
 
 --------------------------------------------------
--- ALL COMPUTERS DONE
---------------------------------------------------
-
-function AutoPlay:AreComputersDone()
-	local Found =
-		false
-
-	for _, Computer
-		in ipairs(
-			self:GetComputers()
-		)
-	do
-		Found =
-			true
-
-		if not self:IsComputerDone(
-			Computer
-		)
-		then
-			return false
-		end
-	end
-
-	return Found
-end
-
---------------------------------------------------
 -- EXIT
 --------------------------------------------------
 
@@ -1804,6 +1844,7 @@ function AutoPlay:GetNearestExit()
 	end
 
 	local BestExit = nil
+
 	local BestDistance =
 		math.huge
 
@@ -1852,9 +1893,12 @@ function AutoPlay:UseExit(
 	Exit,
 	Token
 )
+	if not Exit then
+		return false
+	end
+
 	local Trigger =
-		Exit
-		and Exit:FindFirstChild(
+		Exit:FindFirstChild(
 			"ExitDoorTrigger",
 			true
 		)
@@ -1875,7 +1919,7 @@ function AutoPlay:UseExit(
 		"Walking to exit"
 	)
 
-	local Success,
+	local Arrived,
 		Reason =
 		self:MoveTo(
 			CFrame.new(
@@ -1885,7 +1929,7 @@ function AutoPlay:UseExit(
 			{}
 		)
 
-	if not Success then
+	if not Arrived then
 		if Reason
 			== "Threat"
 		then
@@ -1901,11 +1945,60 @@ function AutoPlay:UseExit(
 		"Opening exit"
 	)
 
-	self:_Call(
-		"OpenExit",
-		Exit,
+	--------------------------------------------------
+	-- HOLD EXIT ACTION
+	--------------------------------------------------
+
+	self:StartAction(
 		Trigger
 	)
+
+	local Started =
+		os.clock()
+
+	while self.Config.Enabled
+		and Token
+			== self._runToken
+	do
+		if self:IsBeastClose() then
+			self:LeaveTrigger()
+
+			self:HideFromBeast(
+				Token
+			)
+
+			return false
+		end
+
+		self:_SetProgress(
+			self:GetActionProgress()
+		)
+
+		local ActionSign =
+			Trigger:FindFirstChild(
+				"ActionSign"
+			)
+
+		if ActionSign
+			and ActionSign.Value
+				~= 12
+		then
+			break
+		end
+
+		if os.clock()
+			- Started
+			>= self.Config.ExitOpenTimeout
+		then
+			break
+		end
+
+		task.wait(
+			0.05
+		)
+	end
+
+	self:LeaveTrigger()
 
 	--------------------------------------------------
 	-- EXIT AREA
@@ -1930,11 +2023,15 @@ function AutoPlay:UseExit(
 			"BasePart"
 		)
 	then
+		self:_SetStatus(
+			"Exit area not found"
+		)
+
 		return false
 	end
 
 	self:_SetStatus(
-		"Walking through exit"
+		"Escaping"
 	)
 
 	local Escaped =
@@ -1950,12 +2047,6 @@ function AutoPlay:UseExit(
 		)
 
 	if Escaped then
-		self:_Call(
-			"Escape",
-			Exit,
-			ExitArea
-		)
-
 		self:_SetStatus(
 			"Escaped"
 		)
@@ -1967,7 +2058,7 @@ function AutoPlay:UseExit(
 end
 
 --------------------------------------------------
--- LOOP
+-- MAIN LOOP
 --------------------------------------------------
 
 function AutoPlay:_Run(
@@ -1981,12 +2072,16 @@ function AutoPlay:_Run(
 		"None"
 	)
 
+	self:_SetProgress(
+		0
+	)
+
 	while self.Config.Enabled
 		and Token
 			== self._runToken
 	do
 		--------------------------------------------------
-		-- SURVIVOR ROUTE
+		-- DON'T RUN SURVIVOR AUTOPLAY AS BEAST
 		--------------------------------------------------
 
 		if self:IsBeast(
@@ -2077,11 +2172,13 @@ function AutoPlay:_Run(
 		end
 
 		task.wait(
-			0.25
+			0.2
 		)
 	end
 
 	self:CancelMove()
+
+	self:LeaveTrigger()
 
 	self:_SetProgress(
 		0
@@ -2115,9 +2212,7 @@ function AutoPlay:SetEnabled(
 	if not Enabled then
 		self:CancelMove()
 
-		self:_Call(
-			"StopComputer"
-		)
+		self:LeaveTrigger()
 
 		self:_SetStatus(
 			"Disabled"
@@ -2139,6 +2234,19 @@ function AutoPlay:SetEnabled(
 			Token
 		)
 	end)
+end
+
+--------------------------------------------------
+-- INIT
+--------------------------------------------------
+
+function AutoPlay:Init()
+	if self._initialized then
+		return
+	end
+
+	self._initialized =
+		true
 end
 
 --------------------------------------------------
@@ -2240,18 +2348,18 @@ function AutoPlay:CreateUI(
 				Bar.Parent =
 					Container
 
-				local Corner =
+				local BarCorner =
 					Instance.new(
 						"UICorner"
 					)
 
-				Corner.CornerRadius =
+				BarCorner.CornerRadius =
 					UDim.new(
 						0,
 						5
 					)
 
-				Corner.Parent =
+				BarCorner.Parent =
 					Bar
 
 				local Fill =
@@ -2337,7 +2445,7 @@ function AutoPlay:CreateUI(
 	})
 
 	--------------------------------------------------
-	-- ENABLE
+	-- AUTOPLAY
 	--------------------------------------------------
 
 	Section:AddToggle({
@@ -2381,10 +2489,7 @@ function AutoPlay:CreateUI(
 					Value
 
 				self.Config.BeastResumeDistance =
-					math.max(
-						Value + 7,
-						Value
-					)
+					Value + 7
 			end,
 	})
 
@@ -2428,9 +2533,7 @@ function AutoPlay:Stop()
 
 	self:CancelMove()
 
-	self:_Call(
-		"StopComputer"
-	)
+	self:LeaveTrigger()
 
 	self:_SetStatus(
 		"Stopped"
