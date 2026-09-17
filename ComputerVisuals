@@ -1,0 +1,491 @@
+local Workspace = game:GetService("Workspace")
+
+local ComputerVisuals = {}
+
+ComputerVisuals.Config = {
+	Enabled = true,
+
+	FillTransparency = 0.78,
+	OutlineTransparency = 0,
+
+	ShowFinished = true,
+
+	DoneColor = Color3.fromRGB(
+		40,
+		127,
+		71
+	),
+}
+
+ComputerVisuals._running = false
+
+ComputerVisuals._computers = {}
+ComputerVisuals._connections = {}
+
+--------------------------------------------------
+-- CONNECT
+--------------------------------------------------
+
+function ComputerVisuals:_Connect(
+	Signal,
+	Callback
+)
+	local Connection =
+		Signal:Connect(
+			Callback
+		)
+
+	table.insert(
+		self._connections,
+		Connection
+	)
+
+	return Connection
+end
+
+--------------------------------------------------
+-- COMPUTER CHECK
+--------------------------------------------------
+
+function ComputerVisuals:IsComputer(
+	Object
+)
+	return Object
+		and Object.Name == "ComputerTable"
+end
+
+--------------------------------------------------
+-- SCREEN
+--------------------------------------------------
+
+function ComputerVisuals:GetScreen(
+	Computer
+)
+	if not Computer then
+		return nil
+	end
+
+	local Screen =
+		Computer:FindFirstChild(
+			"Screen"
+		)
+
+	if Screen
+		and Screen:IsA(
+			"BasePart"
+		)
+	then
+		return Screen
+	end
+
+	return nil
+end
+
+--------------------------------------------------
+-- REMOVE
+--------------------------------------------------
+
+function ComputerVisuals:_RemoveComputer(
+	Computer
+)
+	local Data =
+		self._computers[
+			Computer
+		]
+
+	if not Data then
+		return
+	end
+
+	for _, Connection
+		in ipairs(
+			Data.Connections
+		)
+	do
+		pcall(function()
+			Connection:Disconnect()
+		end)
+	end
+
+	if Data.Highlight then
+		pcall(function()
+			Data.Highlight:Destroy()
+		end)
+	end
+
+	self._computers[
+		Computer
+	] = nil
+end
+
+--------------------------------------------------
+-- UPDATE
+--------------------------------------------------
+
+function ComputerVisuals:_UpdateComputer(
+	Computer
+)
+	local Data =
+		self._computers[
+			Computer
+		]
+
+	if not Data then
+		return
+	end
+
+	local Screen =
+		Data.Screen
+
+	if not Screen
+		or not Screen.Parent
+	then
+		self:_RemoveComputer(
+			Computer
+		)
+
+		return
+	end
+
+	local Color =
+		Screen.Color
+
+	Data.Highlight.FillColor =
+		Color
+
+	Data.Highlight.OutlineColor =
+		Color
+
+	Data.Highlight.FillTransparency =
+		self.Config.FillTransparency
+
+	Data.Highlight.OutlineTransparency =
+		self.Config.OutlineTransparency
+
+	--------------------------------------------------
+	-- FINISHED
+	--------------------------------------------------
+
+	local Done =
+		Color == self.Config.DoneColor
+
+	Data.Highlight.Enabled =
+		self.Config.Enabled
+		and (
+			self.Config.ShowFinished
+			or not Done
+		)
+end
+
+--------------------------------------------------
+-- ADD
+--------------------------------------------------
+
+function ComputerVisuals:_AddComputer(
+	Computer
+)
+	if self._computers[
+		Computer
+	] then
+		return
+	end
+
+	local Screen =
+		self:GetScreen(
+			Computer
+		)
+
+	if not Screen then
+		return
+	end
+
+	local Highlight =
+		Instance.new(
+			"Highlight"
+		)
+
+	Highlight.Name =
+		"ComputerHighlight"
+
+	Highlight.Adornee =
+		Computer
+
+	Highlight.DepthMode =
+		Enum.HighlightDepthMode.AlwaysOnTop
+
+	Highlight.FillTransparency =
+		self.Config.FillTransparency
+
+	Highlight.OutlineTransparency =
+		self.Config.OutlineTransparency
+
+	Highlight.Parent =
+		Computer
+
+	local Data = {
+		Screen =
+			Screen,
+
+		Highlight =
+			Highlight,
+
+		Connections = {},
+	}
+
+	self._computers[
+		Computer
+	] = Data
+
+	--------------------------------------------------
+	-- LIVE SCREEN COLOR
+	--------------------------------------------------
+
+	table.insert(
+		Data.Connections,
+
+		Screen:GetPropertyChangedSignal(
+			"Color"
+		):Connect(function()
+			self:_UpdateComputer(
+				Computer
+			)
+		end)
+	)
+
+	--------------------------------------------------
+	-- COMPUTER REMOVED
+	--------------------------------------------------
+
+	table.insert(
+		Data.Connections,
+
+		Computer.AncestryChanged:Connect(
+			function(_, Parent)
+				if Parent == nil then
+					self:_RemoveComputer(
+						Computer
+					)
+				end
+			end
+		)
+	)
+
+	self:_UpdateComputer(
+		Computer
+	)
+end
+
+--------------------------------------------------
+-- SCAN
+--------------------------------------------------
+
+function ComputerVisuals:Scan()
+	for _, Object
+		in ipairs(
+			Workspace:GetDescendants()
+		)
+	do
+		if self:IsComputer(
+			Object
+		)
+		then
+			self:_AddComputer(
+				Object
+			)
+		end
+	end
+end
+
+--------------------------------------------------
+-- ENABLE
+--------------------------------------------------
+
+function ComputerVisuals:SetEnabled(
+	Enabled
+)
+	self.Config.Enabled =
+		Enabled == true
+
+	for Computer
+		in pairs(
+			self._computers
+		)
+	do
+		self:_UpdateComputer(
+			Computer
+		)
+	end
+end
+
+--------------------------------------------------
+-- SHOW FINISHED
+--------------------------------------------------
+
+function ComputerVisuals:SetShowFinished(
+	Enabled
+)
+	self.Config.ShowFinished =
+		Enabled == true
+
+	for Computer
+		in pairs(
+			self._computers
+		)
+	do
+		self:_UpdateComputer(
+			Computer
+		)
+	end
+end
+
+--------------------------------------------------
+-- UI
+--------------------------------------------------
+
+function ComputerVisuals:CreateUI(
+	Section
+)
+	Section:AddToggle({
+		Name =
+			"Computer Visuals",
+
+		Default =
+			self.Config.Enabled,
+
+		Callback =
+			function(Value)
+				self:SetEnabled(
+					Value
+				)
+			end,
+	})
+
+	Section:AddToggle({
+		Name =
+			"Show Finished Computers",
+
+		Default =
+			self.Config.ShowFinished,
+
+		Callback =
+			function(Value)
+				self:SetShowFinished(
+					Value
+				)
+			end,
+	})
+end
+
+--------------------------------------------------
+-- START
+--------------------------------------------------
+
+function ComputerVisuals:Start()
+	if self._running then
+		return
+	end
+
+	self._running =
+		true
+
+	self:Scan()
+
+	--------------------------------------------------
+	-- NEW COMPUTERS
+	--------------------------------------------------
+
+	self:_Connect(
+		Workspace.DescendantAdded,
+		function(Object)
+			if self:IsComputer(
+				Object
+			)
+			then
+				task.defer(
+					function()
+						self:_AddComputer(
+							Object
+						)
+					end
+				)
+			end
+
+			--------------------------------------------------
+			-- SCREEN ADDED AFTER COMPUTER
+			--------------------------------------------------
+
+			if Object.Name
+				== "Screen"
+			then
+				local Parent =
+					Object.Parent
+
+				if Parent
+					and self:IsComputer(
+						Parent
+					)
+				then
+					task.defer(
+						function()
+							self:_AddComputer(
+								Parent
+							)
+						end
+					)
+				end
+			end
+		end
+	)
+end
+
+--------------------------------------------------
+-- STOP
+--------------------------------------------------
+
+function ComputerVisuals:Stop()
+	self._running =
+		false
+
+	for _, Connection
+		in ipairs(
+			self._connections
+		)
+	do
+		pcall(function()
+			Connection:Disconnect()
+		end)
+	end
+
+	table.clear(
+		self._connections
+	)
+
+	local Computers = {}
+
+	for Computer
+		in pairs(
+			self._computers
+		)
+	do
+		table.insert(
+			Computers,
+			Computer
+		)
+	end
+
+	for _, Computer
+		in ipairs(
+			Computers
+		)
+	do
+		self:_RemoveComputer(
+			Computer
+		)
+	end
+end
+
+function ComputerVisuals:Destroy()
+	self:Stop()
+end
+
+return ComputerVisuals
