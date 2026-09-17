@@ -28,6 +28,24 @@ local TempPlayerStatsModule =
 local AutoPlay = {}
 
 --------------------------------------------------
+-- VERSION
+--------------------------------------------------
+
+AutoPlay.Name =
+	"AutoPlay"
+
+AutoPlay.Version =
+	"v1.0.0"
+
+print(
+	("[FleeTheFacility] %s %s loaded")
+		:format(
+			AutoPlay.Name,
+			AutoPlay.Version
+		)
+)
+
+--------------------------------------------------
 -- CONFIG
 --------------------------------------------------
 
@@ -80,21 +98,29 @@ AutoPlay.Config = {
 -- STATE
 --------------------------------------------------
 
-AutoPlay.Navigator = nil
+AutoPlay.Navigator =
+	nil
 
-AutoPlay._runToken = 0
+AutoPlay._runToken =
+	0
 
-AutoPlay._currentTrigger = nil
+AutoPlay._currentTrigger =
+	nil
 
-AutoPlay._statusLabel = nil
+AutoPlay._statusLabel =
+	nil
 
-AutoPlay._objectiveLabel = nil
+AutoPlay._objectiveLabel =
+	nil
 
-AutoPlay._progressFill = nil
+AutoPlay._progressFill =
+	nil
 
-AutoPlay._progressLabel = nil
+AutoPlay._progressLabel =
+	nil
 
-AutoPlay._initialized = false
+AutoPlay._initialized =
+	false
 
 --------------------------------------------------
 -- INIT
@@ -112,6 +138,14 @@ function AutoPlay:Init(
 
 	self.Navigator =
 		Navigator
+
+	print(
+		("[FleeTheFacility] %s %s initialized")
+			:format(
+				self.Name,
+				self.Version
+			)
+	)
 end
 
 --------------------------------------------------
@@ -124,7 +158,9 @@ function AutoPlay:_SetStatus(
 	if self._statusLabel then
 		self._statusLabel:SetText(
 			"Status: "
-				.. tostring(Text)
+				.. tostring(
+					Text
+				)
 		)
 	end
 end
@@ -135,7 +171,9 @@ function AutoPlay:_SetObjective(
 	if self._objectiveLabel then
 		self._objectiveLabel:SetText(
 			"Objective: "
-				.. tostring(Text)
+				.. tostring(
+					Text
+				)
 		)
 	end
 end
@@ -258,14 +296,17 @@ function AutoPlay:IsBeast(
 		) == "function"
 	then
 		local Success, Result =
-			pcall(function()
-				return Stats.GetValue(
-					"IsBeast"
-				)
-			end)
+			pcall(
+				function()
+					return Stats.GetValue(
+						"IsBeast"
+					)
+				end
+			)
 
 		if Success then
-			return Result == true
+			return Result
+				== true
 		end
 	end
 
@@ -289,7 +330,8 @@ function AutoPlay:GetBeast()
 			Players:GetPlayers()
 		)
 	do
-		if Player ~= LocalPlayer
+		if Player
+				~= LocalPlayer
 			and self:IsBeast(
 				Player
 			)
@@ -340,21 +382,15 @@ end
 --------------------------------------------------
 
 function AutoPlay:LeaveTrigger()
-	--------------------------------------------------
-	-- RELEASE ACTION
-	--------------------------------------------------
-
-	pcall(function()
-		RemoteEvent:FireServer(
-			"Input",
-			"Action",
-			false
-		)
-	end)
-
-	--------------------------------------------------
-	-- LEAVE CURRENT TRIGGER
-	--------------------------------------------------
+	pcall(
+		function()
+			RemoteEvent:FireServer(
+				"Input",
+				"Action",
+				false
+			)
+		end
+	)
 
 	local Trigger =
 		self._currentTrigger
@@ -368,14 +404,16 @@ function AutoPlay:LeaveTrigger()
 			)
 
 		if Event then
-			pcall(function()
-				RemoteEvent:FireServer(
-					"Input",
-					"Trigger",
-					false,
-					Event
-				)
-			end)
+			pcall(
+				function()
+					RemoteEvent:FireServer(
+						"Input",
+						"Trigger",
+						false,
+						Event
+					)
+				end
+			)
 		end
 	end
 
@@ -405,10 +443,6 @@ function AutoPlay:EnterTrigger(
 		return false
 	end
 
-	--------------------------------------------------
-	-- LEAVE OLD TRIGGER
-	--------------------------------------------------
-
 	if self._currentTrigger
 		and self._currentTrigger
 			~= Trigger
@@ -419,14 +453,16 @@ function AutoPlay:EnterTrigger(
 	self._currentTrigger =
 		Trigger
 
-	pcall(function()
-		RemoteEvent:FireServer(
-			"Input",
-			"Trigger",
-			true,
-			Event
-		)
-	end)
+	pcall(
+		function()
+			RemoteEvent:FireServer(
+				"Input",
+				"Trigger",
+				true,
+				Event
+			)
+		end
+	)
 
 	task.wait(
 		0.08
@@ -449,13 +485,15 @@ function AutoPlay:StartAction(
 		return false
 	end
 
-	pcall(function()
-		RemoteEvent:FireServer(
-			"Input",
-			"Action",
-			true
-		)
-	end)
+	pcall(
+		function()
+			RemoteEvent:FireServer(
+				"Input",
+				"Action",
+				true
+			)
+		end
+	)
 
 	return true
 end
@@ -490,11 +528,13 @@ end
 
 function AutoPlay:GetActionProgress()
 	local Success, Value =
-		pcall(function()
-			return TempPlayerStatsModule.GetValue(
-				"ActionProgress"
-			)
-		end)
+		pcall(
+			function()
+				return TempPlayerStatsModule.GetValue(
+					"ActionProgress"
+				)
+			end
+		)
 
 	if not Success then
 		return 0
@@ -514,11 +554,13 @@ end
 
 function AutoPlay:HandleSkillCheck()
 	local Success, Goal =
-		pcall(function()
-			return TempPlayerStatsModule.GetValue(
-				"TimingGoalPosition"
-			)
-		end)
+		pcall(
+			function()
+				return TempPlayerStatsModule.GetValue(
+					"TimingGoalPosition"
+				)
+			end
+		)
 
 	if not Success then
 		return
@@ -532,12 +574,14 @@ function AutoPlay:HandleSkillCheck()
 		return
 	end
 
-	pcall(function()
-		RemoteEvent:FireServer(
-			"SetPlayerMinigameResult",
-			true
-		)
-	end)
+	pcall(
+		function()
+			RemoteEvent:FireServer(
+				"SetPlayerMinigameResult",
+				true
+			)
+		end
+	)
 end
 
 --------------------------------------------------
@@ -653,10 +697,6 @@ function AutoPlay:GetComputerTriggers(
 					"Event"
 				)
 
-			--------------------------------------------------
-			-- 20 = HACK
-			--------------------------------------------------
-
 			if ActionSign
 				and Event
 				and ActionSign.Value
@@ -689,7 +729,9 @@ function AutoPlay:IsTriggerOccupied(
 			Players:GetPlayers()
 		)
 	do
-		if Player ~= LocalPlayer then
+		if Player
+			~= LocalPlayer
+		then
 			local Character =
 				Player.Character
 
@@ -707,7 +749,8 @@ function AutoPlay:IsTriggerOccupied(
 
 			if Root
 				and Humanoid
-				and Humanoid.Health > 0
+				and Humanoid.Health
+					> 0
 			then
 				local Distance =
 					(
@@ -774,8 +817,11 @@ function AutoPlay:GetNearestComputerTarget()
 			nil
 	end
 
-	local BestComputer = nil
-	local BestTrigger = nil
+	local BestComputer =
+		nil
+
+	local BestTrigger =
+		nil
 
 	local BestDistance =
 		math.huge
@@ -785,10 +831,6 @@ function AutoPlay:GetNearestComputerTarget()
 			self:GetComputers()
 		)
 	do
-		--------------------------------------------------
-		-- SKIP GREEN COMPUTERS
-		--------------------------------------------------
-
 		if not self:IsComputerDone(
 			Computer
 		)
@@ -930,11 +972,6 @@ function AutoPlay:IsDoorOpen(
 		return false
 	end
 
-	--------------------------------------------------
-	-- 10 = OPEN
-	-- 11 = CLOSE
-	--------------------------------------------------
-
 	return ActionSign.Value
 		== 11
 end
@@ -956,7 +993,9 @@ local function DistanceToSegment(
 			AB
 		)
 
-	if LengthSquared <= 0 then
+	if LengthSquared
+		<= 0
+	then
 		return (
 			Point - A
 		).Magnitude,
@@ -1003,8 +1042,11 @@ function AutoPlay:FindDoorOnRoute(
 			nil
 	end
 
-	local BestDoor = nil
-	local BestTrigger = nil
+	local BestDoor =
+		nil
+
+	local BestTrigger =
+		nil
 
 	local BestAlpha =
 		math.huge
@@ -1081,10 +1123,6 @@ function AutoPlay:NavigateTo(
 
 			ShouldAbort =
 				function()
-					--------------------------------------------------
-					-- STOPPED
-					--------------------------------------------------
-
 					if not self.Config.Enabled
 						or Token
 							~= self._runToken
@@ -1092,19 +1130,11 @@ function AutoPlay:NavigateTo(
 						return "Stopped"
 					end
 
-					--------------------------------------------------
-					-- BEAST
-					--------------------------------------------------
-
 					if not Options.IgnoreBeast
 						and self:IsBeastClose()
 					then
 						return "Threat"
 					end
-
-					--------------------------------------------------
-					-- COMPUTER COMPLETED
-					--------------------------------------------------
 
 					if Options.Computer
 						and self:IsComputerDone(
@@ -1113,10 +1143,6 @@ function AutoPlay:NavigateTo(
 					then
 						return "Completed"
 					end
-
-					--------------------------------------------------
-					-- SOMEONE TOOK SPOT
-					--------------------------------------------------
 
 					if Options.Trigger then
 						local Occupied =
@@ -1161,10 +1187,6 @@ function AutoPlay:OpenDoor(
 		"Opening door"
 	)
 
-	--------------------------------------------------
-	-- WALK TO DOOR
-	--------------------------------------------------
-
 	local Reached,
 		Reason =
 		self:NavigateTo(
@@ -1181,10 +1203,6 @@ function AutoPlay:OpenDoor(
 			Reason
 	end
 
-	--------------------------------------------------
-	-- OPEN THROUGH GAME REMOTE
-	--------------------------------------------------
-
 	if not self:PulseAction(
 		Trigger,
 		0.14
@@ -1192,10 +1210,6 @@ function AutoPlay:OpenDoor(
 	then
 		return false
 	end
-
-	--------------------------------------------------
-	-- WAIT UNTIL ACTIONSIGN BECOMES CLOSE
-	--------------------------------------------------
 
 	local Started =
 		os.clock()
@@ -1266,10 +1280,6 @@ function AutoPlay:NavigateWithDoors(
 			"InvalidTarget"
 	end
 
-	--------------------------------------------------
-	-- CHECK FOR CLOSED DOOR FIRST
-	--------------------------------------------------
-
 	local Door,
 		DoorTrigger =
 		self:FindDoorOnRoute(
@@ -1300,10 +1310,6 @@ function AutoPlay:NavigateWithDoors(
 		)
 	end
 
-	--------------------------------------------------
-	-- NORMAL NAVIGATOR
-	--------------------------------------------------
-
 	local Reached,
 		Reason =
 		self:NavigateTo(
@@ -1311,10 +1317,6 @@ function AutoPlay:NavigateWithDoors(
 			Token,
 			Options
 		)
-
-	--------------------------------------------------
-	-- IF PATH BLOCKED, CHECK DOOR AGAIN
-	--------------------------------------------------
 
 	if not Reached
 		and (
@@ -1403,10 +1405,6 @@ function AutoPlay:HideFromBeast(
 		"Beast nearby - hiding"
 	)
 
-	--------------------------------------------------
-	-- SAVE STATE
-	--------------------------------------------------
-
 	local OriginalAnchored =
 		Root.Anchored
 
@@ -1425,10 +1423,6 @@ function AutoPlay:HideFromBeast(
 	Root.Anchored =
 		true
 
-	--------------------------------------------------
-	-- TWEEN DOWN
-	--------------------------------------------------
-
 	local DownTween =
 		TweenService:Create(
 			Root,
@@ -1446,10 +1440,6 @@ function AutoPlay:HideFromBeast(
 	DownTween:Play()
 
 	DownTween.Completed:Wait()
-
-	--------------------------------------------------
-	-- WAIT UNTIL SAFE
-	--------------------------------------------------
 
 	while self.Config.Enabled
 		and Token
@@ -1482,10 +1472,6 @@ function AutoPlay:HideFromBeast(
 	self:_SetStatus(
 		"Returning"
 	)
-
-	--------------------------------------------------
-	-- TWEEN BACK
-	--------------------------------------------------
 
 	local UpTween =
 		TweenService:Create(
@@ -1529,20 +1515,12 @@ function AutoPlay:HackComputer(
 		return false
 	end
 
-	--------------------------------------------------
-	-- DONE
-	--------------------------------------------------
-
 	if self:IsComputerDone(
 		Computer
 	)
 	then
 		return true
 	end
-
-	--------------------------------------------------
-	-- OCCUPIED
-	--------------------------------------------------
 
 	if self:IsTriggerOccupied(
 		Trigger
@@ -1558,10 +1536,6 @@ function AutoPlay:HackComputer(
 	self:_SetStatus(
 		"Going to computer"
 	)
-
-	--------------------------------------------------
-	-- NAVIGATE
-	--------------------------------------------------
 
 	local Reached,
 		Reason =
@@ -1581,7 +1555,9 @@ function AutoPlay:HackComputer(
 		)
 
 	if not Reached then
-		if Reason == "Threat" then
+		if Reason
+			== "Threat"
+		then
 			self:HideFromBeast(
 				Token
 			)
@@ -1590,20 +1566,12 @@ function AutoPlay:HackComputer(
 		return false
 	end
 
-	--------------------------------------------------
-	-- RECHECK COMPUTER
-	--------------------------------------------------
-
 	if self:IsComputerDone(
 		Computer
 	)
 	then
 		return true
 	end
-
-	--------------------------------------------------
-	-- RECHECK OCCUPANCY
-	--------------------------------------------------
 
 	if self:IsTriggerOccupied(
 		Trigger
@@ -1616,10 +1584,6 @@ function AutoPlay:HackComputer(
 		return false
 	end
 
-	--------------------------------------------------
-	-- BEAST
-	--------------------------------------------------
-
 	if self:IsBeastClose() then
 		self:HideFromBeast(
 			Token
@@ -1627,10 +1591,6 @@ function AutoPlay:HackComputer(
 
 		return false
 	end
-
-	--------------------------------------------------
-	-- START HACK
-	--------------------------------------------------
 
 	self:_SetStatus(
 		"Hacking"
@@ -1650,10 +1610,6 @@ function AutoPlay:HackComputer(
 		and Token
 			== self._runToken
 	do
-		--------------------------------------------------
-		-- FINISHED
-		--------------------------------------------------
-
 		if self:IsComputerDone(
 			Computer
 		)
@@ -1665,10 +1621,6 @@ function AutoPlay:HackComputer(
 			break
 		end
 
-		--------------------------------------------------
-		-- BEAST
-		--------------------------------------------------
-
 		if self:IsBeastClose() then
 			self:LeaveTrigger()
 
@@ -1679,23 +1631,11 @@ function AutoPlay:HackComputer(
 			return false
 		end
 
-		--------------------------------------------------
-		-- PROGRESS
-		--------------------------------------------------
-
 		self:_SetProgress(
 			self:GetActionProgress()
 		)
 
-		--------------------------------------------------
-		-- SKILL CHECK
-		--------------------------------------------------
-
 		self:HandleSkillCheck()
-
-		--------------------------------------------------
-		-- TIMEOUT
-		--------------------------------------------------
 
 		if os.clock()
 			- Started
@@ -1714,10 +1654,6 @@ function AutoPlay:HackComputer(
 	end
 
 	self:LeaveTrigger()
-
-	--------------------------------------------------
-	-- CHECK GREEN SCREEN
-	--------------------------------------------------
 
 	if self:IsComputerDone(
 		Computer
@@ -1745,7 +1681,8 @@ function AutoPlay:GetNearestExit()
 		return nil
 	end
 
-	local BestExit = nil
+	local BestExit =
+		nil
 
 	local BestDistance =
 		math.huge
@@ -1825,10 +1762,6 @@ function AutoPlay:UseExit(
 		"Going to exit"
 	)
 
-	--------------------------------------------------
-	-- WALK TO EXIT
-	--------------------------------------------------
-
 	local Reached,
 		Reason =
 		self:NavigateWithDoors(
@@ -1841,7 +1774,9 @@ function AutoPlay:UseExit(
 		)
 
 	if not Reached then
-		if Reason == "Threat" then
+		if Reason
+			== "Threat"
+		then
 			self:HideFromBeast(
 				Token
 			)
@@ -1849,10 +1784,6 @@ function AutoPlay:UseExit(
 
 		return false
 	end
-
-	--------------------------------------------------
-	-- OPEN EXIT
-	--------------------------------------------------
 
 	self:_SetStatus(
 		"Opening exit"
@@ -1891,11 +1822,6 @@ function AutoPlay:UseExit(
 				"ActionSign"
 			)
 
-		--------------------------------------------------
-		-- 12 = OPEN EXIT
-		-- WHEN IT CHANGES, EXIT IS READY
-		--------------------------------------------------
-
 		if ActionSign
 			and ActionSign.Value
 				~= 12
@@ -1916,10 +1842,6 @@ function AutoPlay:UseExit(
 	end
 
 	self:LeaveTrigger()
-
-	--------------------------------------------------
-	-- EXIT AREA
-	--------------------------------------------------
 
 	local ExitArea =
 		Exit:FindFirstChild(
@@ -1950,10 +1872,6 @@ function AutoPlay:UseExit(
 	self:_SetStatus(
 		"Escaping"
 	)
-
-	--------------------------------------------------
-	-- MOVE THROUGH EXIT AREA
-	--------------------------------------------------
 
 	local Escaped =
 		self:NavigateWithDoors(
@@ -2002,10 +1920,6 @@ function AutoPlay:_Run(
 		and Token
 			== self._runToken
 	do
-		--------------------------------------------------
-		-- SURVIVOR ONLY
-		--------------------------------------------------
-
 		if self:IsBeast(
 			LocalPlayer
 		)
@@ -2021,10 +1935,6 @@ function AutoPlay:_Run(
 			continue
 		end
 
-		--------------------------------------------------
-		-- BEAST WITHIN 15 STUDS
-		--------------------------------------------------
-
 		if self:IsBeastClose() then
 			self:HideFromBeast(
 				Token
@@ -2032,10 +1942,6 @@ function AutoPlay:_Run(
 
 			continue
 		end
-
-		--------------------------------------------------
-		-- COMPUTERS
-		--------------------------------------------------
 
 		if not self:AreComputersDone() then
 			local Computer,
@@ -2062,10 +1968,6 @@ function AutoPlay:_Run(
 
 			continue
 		end
-
-		--------------------------------------------------
-		-- EXIT
-		--------------------------------------------------
 
 		local Exit =
 			self:GetNearestExit()
@@ -2099,10 +2001,6 @@ function AutoPlay:_Run(
 			0.2
 		)
 	end
-
-	--------------------------------------------------
-	-- CLEAN
-	--------------------------------------------------
 
 	if self.Navigator then
 		self.Navigator:Cancel()
@@ -2158,14 +2056,32 @@ function AutoPlay:SetEnabled(
 			0
 		)
 
+		print(
+			("[FleeTheFacility] %s %s disabled")
+				:format(
+					self.Name,
+					self.Version
+				)
+		)
+
 		return
 	end
 
-	task.spawn(function()
-		self:_Run(
-			Token
-		)
-	end)
+	print(
+		("[FleeTheFacility] %s %s enabled")
+			:format(
+				self.Name,
+				self.Version
+			)
+	)
+
+	task.spawn(
+		function()
+			self:_Run(
+				Token
+			)
+		end
+	)
 end
 
 --------------------------------------------------
@@ -2187,15 +2103,14 @@ function AutoPlay:CreateUI(
 				"Objective: None",
 		})
 
-	--------------------------------------------------
-	-- PROGRESS BAR
-	--------------------------------------------------
-
 	Section:AddCustom({
-		Height = 48,
+		Height =
+			48,
 
 		Builder =
-			function(Container)
+			function(
+				Container
+			)
 				local Title =
 					Instance.new(
 						"TextLabel"
@@ -2362,10 +2277,6 @@ function AutoPlay:CreateUI(
 			end,
 	})
 
-	--------------------------------------------------
-	-- AUTOPLAY
-	--------------------------------------------------
-
 	Section:AddToggle({
 		Name =
 			"Auto Play",
@@ -2374,16 +2285,14 @@ function AutoPlay:CreateUI(
 			false,
 
 		Callback =
-			function(Value)
+			function(
+				Value
+			)
 				self:SetEnabled(
 					Value
 				)
 			end,
 	})
-
-	--------------------------------------------------
-	-- BEAST DISTANCE
-	--------------------------------------------------
 
 	Section:AddSlider({
 		Name =
@@ -2402,7 +2311,9 @@ function AutoPlay:CreateUI(
 			1,
 
 		Callback =
-			function(Value)
+			function(
+				Value
+			)
 				self.Config.BeastAvoidDistance =
 					Value
 
@@ -2410,10 +2321,6 @@ function AutoPlay:CreateUI(
 					Value + 7
 			end,
 	})
-
-	--------------------------------------------------
-	-- HIDE DEPTH
-	--------------------------------------------------
 
 	Section:AddSlider({
 		Name =
@@ -2432,7 +2339,9 @@ function AutoPlay:CreateUI(
 			1,
 
 		Callback =
-			function(Value)
+			function(
+				Value
+			)
 				self.Config.HideDepth =
 					Value
 			end,
@@ -2449,8 +2358,20 @@ function AutoPlay:Stop()
 	)
 end
 
+--------------------------------------------------
+-- DESTROY
+--------------------------------------------------
+
 function AutoPlay:Destroy()
 	self:Stop()
+
+	print(
+		("[FleeTheFacility] %s %s destroyed")
+			:format(
+				self.Name,
+				self.Version
+			)
+	)
 end
 
 return AutoPlay
