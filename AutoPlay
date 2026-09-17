@@ -1,0 +1,1701 @@
+local Players =
+	game:GetService("Players")
+
+local TweenService =
+	game:GetService("TweenService")
+
+local ReplicatedStorage =
+	game:GetService("ReplicatedStorage")
+
+local Workspace =
+	game:GetService("Workspace")
+
+local LocalPlayer =
+	Players.LocalPlayer
+
+local AutoPlay = {}
+
+--------------------------------------------------
+-- CONFIG
+--------------------------------------------------
+
+AutoPlay.Config = {
+	Enabled = false,
+
+	MoveSpeed = 28,
+
+	ComputerOffset =
+		Vector3.new(
+			0,
+			2.5,
+			0
+		),
+
+	ExitOffset =
+		Vector3.new(
+			0,
+			2.5,
+			0
+		),
+
+	BeastAvoidDistance = 55,
+
+	BeastResumeDistance = 75,
+
+	HideDepth = 16,
+
+	AutoSkillCheck = true,
+
+	InteractionTimeout = 35,
+}
+
+--------------------------------------------------
+-- STATE
+--------------------------------------------------
+
+AutoPlay._runToken = 0
+
+AutoPlay._currentTween = nil
+
+AutoPlay._statusLabel = nil
+
+AutoPlay._objectiveLabel = nil
+
+AutoPlay._progressLabel = nil
+
+AutoPlay._progressFill = nil
+
+AutoPlay._initialized = false
+
+AutoPlay._remote = nil
+
+AutoPlay._computersLeft = nil
+
+AutoPlay._stats = nil
+
+--------------------------------------------------
+-- UI
+--------------------------------------------------
+
+function AutoPlay:_SetStatus(Text)
+	if self._statusLabel then
+		self._statusLabel:SetText(
+			"Status: "
+				.. tostring(Text)
+		)
+	end
+end
+
+function AutoPlay:_SetObjective(Text)
+	if self._objectiveLabel then
+		self._objectiveLabel:SetText(
+			"Objective: "
+				.. tostring(Text)
+		)
+	end
+end
+
+function AutoPlay:_SetProgress(Value)
+	Value =
+		math.clamp(
+			tonumber(Value)
+				or 0,
+			0,
+			1
+		)
+
+	if self._progressFill then
+		self._progressFill.Size =
+			UDim2.fromScale(
+				Value,
+				1
+			)
+	end
+
+	if self._progressLabel then
+		self._progressLabel.Text =
+			("%d%%"):format(
+				math.floor(
+					Value * 100
+				)
+			)
+	end
+end
+
+--------------------------------------------------
+-- CHARACTER
+--------------------------------------------------
+
+function AutoPlay:GetCharacter()
+	return LocalPlayer.Character
+end
+
+function AutoPlay:GetRoot()
+	local Character =
+		self:GetCharacter()
+
+	if not Character then
+		return nil
+	end
+
+	return Character:FindFirstChild(
+		"HumanoidRootPart"
+	)
+end
+
+--------------------------------------------------
+-- PLAYER STATS
+--------------------------------------------------
+
+function AutoPlay:GetStats(Player)
+	local ModuleScript =
+		Player
+		and Player:FindFirstChild(
+			"TempPlayerStatsModule"
+		)
+
+	if not ModuleScript then
+		return nil
+	end
+
+	local Success, Result =
+		pcall(
+			require,
+			ModuleScript
+		)
+
+	if Success then
+		return Result
+	end
+
+	return nil
+end
+
+function AutoPlay:IsBeast(Player)
+	local Stats =
+		self:GetStats(Player)
+
+	if Stats
+		and type(Stats.GetValue)
+			== "function"
+	then
+		local Success, Value =
+			pcall(function()
+				return Stats.GetValue(
+					"IsBeast"
+				)
+			end)
+
+		if Success
+			and Value == true
+		then
+			return true
+		end
+	end
+
+	local Character =
+		Player
+		and Player.Character
+
+	return Character
+		and Character:FindFirstChild(
+			"BeastPowers"
+		)
+		~= nil
+end
+
+--------------------------------------------------
+-- FIND BEAST
+--------------------------------------------------
+
+function AutoPlay:GetBeast()
+	for _, Player
+		in ipairs(
+			Players:GetPlayers()
+		)
+	do
+		if Player ~= LocalPlayer
+			and self:IsBeast(Player)
+		then
+			return Player
+		end
+	end
+
+	return nil
+end
+
+function AutoPlay:GetBeastDistance()
+	local Root =
+		self:GetRoot()
+
+	local Beast =
+		self:GetBeast()
+
+	if not Root
+		or not Beast
+		or not Beast.Character
+	then
+		return math.huge
+	end
+
+	local BeastRoot =
+		Beast.Character:FindFirstChild(
+			"HumanoidRootPart"
+		)
+
+	if not BeastRoot then
+		return math.huge
+	end
+
+	return (
+		BeastRoot.Position
+		- Root.Position
+	).Magnitude
+end
+
+function AutoPlay:IsBeastClose()
+	return self:GetBeastDistance()
+		<= self.Config.BeastAvoidDistance
+end
+
+--------------------------------------------------
+-- OBJECT POSITION
+--------------------------------------------------
+
+function AutoPlay:GetPosition(Object)
+	if not Object then
+		return nil
+	end
+
+	if Object:IsA("BasePart") then
+		return Object.Position
+	end
+
+	if Object:IsA("Model") then
+		return Object:GetPivot().Position
+	end
+
+	local Part =
+		Object:FindFirstChildWhichIsA(
+			"BasePart",
+			true
+		)
+
+	return Part
+		and Part.Position
+end
+
+--------------------------------------------------
+-- COMPUTER TRIGGER
+--------------------------------------------------
+
+function AutoPlay:GetComputerTrigger(
+	Computer
+)
+	if not Computer then
+		return nil
+	end
+
+	for Index = 1, 3 do
+		local Trigger =
+			Computer:FindFirstChild(
+				"ComputerTrigger"
+					.. Index,
+				true
+			)
+
+		if Trigger then
+			local ActionSign =
+				Trigger:FindFirstChild(
+					"ActionSign"
+				)
+
+			if ActionSign
+				and ActionSign.Value
+					== 20
+			then
+				return Trigger
+			end
+		end
+	end
+
+	return nil
+end
+
+--------------------------------------------------
+-- COMPUTER COMPLETE
+--------------------------------------------------
+
+function AutoPlay:IsComputerDone(
+	Computer
+)
+	if not Computer then
+		return true
+	end
+
+	if Computer:GetAttribute(
+		"Completed"
+	) == true
+	then
+		return true
+	end
+
+	if Computer:GetAttribute(
+		"Hacked"
+	) == true
+	then
+		return true
+	end
+
+	return self:GetComputerTrigger(
+		Computer
+	) == nil
+end
+
+--------------------------------------------------
+-- GET COMPUTERS
+--------------------------------------------------
+
+function AutoPlay:GetComputers()
+	local Results = {}
+
+	for _, Object
+		in ipairs(
+			Workspace:GetDescendants()
+		)
+	do
+		if Object.Name
+			== "ComputerTable"
+		then
+			table.insert(
+				Results,
+				Object
+			)
+		end
+	end
+
+	return Results
+end
+
+--------------------------------------------------
+-- NEAREST COMPUTER
+--------------------------------------------------
+
+function AutoPlay:GetNearestComputer()
+	local Root =
+		self:GetRoot()
+
+	if not Root then
+		return nil
+	end
+
+	local BestComputer = nil
+	local BestDistance =
+		math.huge
+
+	for _, Computer
+		in ipairs(
+			self:GetComputers()
+		)
+	do
+		if not self:IsComputerDone(
+			Computer
+		)
+		then
+			local Position =
+				self:GetPosition(
+					Computer
+				)
+
+			if Position then
+				local Distance =
+					(
+						Position
+						- Root.Position
+					).Magnitude
+
+				if Distance
+					< BestDistance
+				then
+					BestDistance =
+						Distance
+
+					BestComputer =
+						Computer
+				end
+			end
+		end
+	end
+
+	return BestComputer
+end
+
+--------------------------------------------------
+-- FIND EXIT
+--------------------------------------------------
+
+function AutoPlay:GetNearestExit()
+	local Root =
+		self:GetRoot()
+
+	if not Root then
+		return nil
+	end
+
+	local Best = nil
+	local BestDistance =
+		math.huge
+
+	for _, Object
+		in ipairs(
+			Workspace:GetDescendants()
+		)
+	do
+		if Object.Name
+			== "ExitDoor"
+		then
+			local Position =
+				self:GetPosition(
+					Object
+				)
+
+			if Position then
+				local Distance =
+					(
+						Position
+						- Root.Position
+					).Magnitude
+
+				if Distance
+					< BestDistance
+				then
+					BestDistance =
+						Distance
+
+					Best =
+						Object
+				end
+			end
+		end
+	end
+
+	return Best
+end
+
+--------------------------------------------------
+-- MOVE
+--------------------------------------------------
+
+function AutoPlay:CancelTween()
+	if self._currentTween then
+		pcall(function()
+			self._currentTween:Cancel()
+		end)
+
+		self._currentTween =
+			nil
+	end
+end
+
+function AutoPlay:MoveTo(
+	TargetCFrame,
+	Token,
+	IgnoreThreat
+)
+	local Root =
+		self:GetRoot()
+
+	if not Root then
+		return false,
+			"NoCharacter"
+	end
+
+	self:CancelTween()
+
+	local Distance =
+		(
+			Root.Position
+			- TargetCFrame.Position
+		).Magnitude
+
+	local Duration =
+		Distance
+		/ math.max(
+			self.Config.MoveSpeed,
+			1
+		)
+
+	Duration =
+		math.max(
+			Duration,
+			0.05
+		)
+
+	local Tween =
+		TweenService:Create(
+			Root,
+			TweenInfo.new(
+				Duration,
+				Enum.EasingStyle.Linear
+			),
+			{
+				CFrame =
+					TargetCFrame,
+			}
+		)
+
+	self._currentTween =
+		Tween
+
+	Tween:Play()
+
+	while self._currentTween
+		== Tween
+		and Tween.PlaybackState
+			== Enum.PlaybackState.Playing
+	do
+		if not self.Config.Enabled
+			or Token
+				~= self._runToken
+		then
+			Tween:Cancel()
+
+			return false,
+				"Stopped"
+		end
+
+		if not IgnoreThreat
+			and self:IsBeastClose()
+		then
+			Tween:Cancel()
+
+			return false,
+				"Threat"
+		end
+
+		task.wait(0.05)
+	end
+
+	if self._currentTween
+		== Tween
+	then
+		self._currentTween =
+			nil
+	end
+
+	return true
+end
+
+--------------------------------------------------
+-- INTERACTION
+--------------------------------------------------
+
+function AutoPlay:StartInteraction(
+	Trigger
+)
+	if not Trigger
+		or not self._remote
+	then
+		return false
+	end
+
+	local Event =
+		Trigger:FindFirstChild(
+			"Event"
+		)
+
+	if not Event then
+		return false
+	end
+
+	self._remote:FireServer(
+		"Input",
+		"Trigger",
+		true,
+		Event
+	)
+
+	task.wait(0.08)
+
+	self._remote:FireServer(
+		"Input",
+		"Action",
+		true
+	)
+
+	if self._stats
+		and type(
+			self._stats.SetValue
+		) == "function"
+	then
+		pcall(function()
+			self._stats.SetValue(
+				"ActionInput",
+				true
+			)
+		end)
+	end
+
+	return true
+end
+
+function AutoPlay:StopInteraction()
+	if not self._remote then
+		return
+	end
+
+	self._remote:FireServer(
+		"Input",
+		"Action",
+		false
+	)
+
+	self._remote:FireServer(
+		"Input",
+		"Trigger",
+		false
+	)
+
+	if self._stats
+		and type(
+			self._stats.SetValue
+		) == "function"
+	then
+		pcall(function()
+			self._stats.SetValue(
+				"ActionInput",
+				false
+			)
+		end)
+	end
+
+	self:_SetProgress(0)
+end
+
+--------------------------------------------------
+-- ACTION PROGRESS
+--------------------------------------------------
+
+function AutoPlay:GetActionProgress()
+	if not self._stats
+		or type(
+			self._stats.GetValue
+		) ~= "function"
+	then
+		return 0
+	end
+
+	local Success, Value =
+		pcall(function()
+			return self._stats.GetValue(
+				"ActionProgress"
+			)
+		end)
+
+	if not Success then
+		return 0
+	end
+
+	return tonumber(Value)
+		or 0
+end
+
+--------------------------------------------------
+-- SKILL CHECK
+--------------------------------------------------
+
+function AutoPlay:HandleSkillCheck()
+	if not self.Config.AutoSkillCheck
+		or not self._stats
+		or not self._remote
+	then
+		return
+	end
+
+	local Success, Goal =
+		pcall(function()
+			return self._stats.GetValue(
+				"TimingGoalPosition"
+			)
+		end)
+
+	if not Success then
+		return
+	end
+
+	if tonumber(Goal)
+		and Goal > 0
+	then
+		self._remote:FireServer(
+			"SetPlayerMinigameResult",
+			true
+		)
+	end
+end
+
+--------------------------------------------------
+-- HIDE FROM BEAST
+--------------------------------------------------
+
+function AutoPlay:HideFromBeast(
+	Token
+)
+	local Root =
+		self:GetRoot()
+
+	if not Root then
+		return false
+	end
+
+	self:StopInteraction()
+
+	local ReturnCFrame =
+		Root.CFrame
+
+	local HiddenCFrame =
+		ReturnCFrame
+		+ Vector3.new(
+			0,
+			-self.Config.HideDepth,
+			0
+		)
+
+	self:_SetStatus(
+		"Beast nearby - hiding"
+	)
+
+	self:MoveTo(
+		HiddenCFrame,
+		Token,
+		true
+	)
+
+	while self.Config.Enabled
+		and Token
+			== self._runToken
+	do
+		if self:GetBeastDistance()
+			>= self.Config.BeastResumeDistance
+		then
+			break
+		end
+
+		task.wait(0.15)
+	end
+
+	if not self.Config.Enabled
+		or Token
+			~= self._runToken
+	then
+		return false
+	end
+
+	self:_SetStatus(
+		"Beast moved away"
+	)
+
+	self:MoveTo(
+		ReturnCFrame,
+		Token,
+		true
+	)
+
+	return true
+end
+
+--------------------------------------------------
+-- HACK COMPUTER
+--------------------------------------------------
+
+function AutoPlay:HackComputer(
+	Computer,
+	Token
+)
+	local Trigger =
+		self:GetComputerTrigger(
+			Computer
+		)
+
+	if not Trigger then
+		return true
+	end
+
+	if not Trigger:IsA(
+		"BasePart"
+	) then
+		return false
+	end
+
+	self:_SetObjective(
+		Computer:GetFullName()
+	)
+
+	self:_SetStatus(
+		"Moving to computer"
+	)
+
+	local Arrived, Reason =
+		self:MoveTo(
+			Trigger.CFrame
+			+ self.Config.ComputerOffset,
+			Token,
+			false
+		)
+
+	if not Arrived then
+		if Reason == "Threat" then
+			self:HideFromBeast(
+				Token
+			)
+		end
+
+		return false
+	end
+
+	if self:IsBeastClose() then
+		self:HideFromBeast(
+			Token
+		)
+
+		return false
+	end
+
+	self:_SetStatus(
+		"Hacking computer"
+	)
+
+	if not self:StartInteraction(
+		Trigger
+	)
+	then
+		return false
+	end
+
+	local Started =
+		os.clock()
+
+	while self.Config.Enabled
+		and Token
+			== self._runToken
+	do
+		if self:IsComputerDone(
+			Computer
+		)
+		then
+			break
+		end
+
+		if self:IsBeastClose() then
+			self:StopInteraction()
+
+			self:HideFromBeast(
+				Token
+			)
+
+			return false
+		end
+
+		local Progress =
+			self:GetActionProgress()
+
+		self:_SetProgress(
+			Progress
+		)
+
+		self:HandleSkillCheck()
+
+		if Progress >= 1 then
+			break
+		end
+
+		if os.clock()
+			- Started
+			>= self.Config.InteractionTimeout
+		then
+			self:_SetStatus(
+				"Hack timed out"
+			)
+
+			break
+		end
+
+		task.wait(0.05)
+	end
+
+	self:StopInteraction()
+
+	if self:IsComputerDone(
+		Computer
+	) then
+		self:_SetStatus(
+			"Computer complete"
+		)
+
+		return true
+	end
+
+	return false
+end
+
+--------------------------------------------------
+-- ALL COMPUTERS DONE
+--------------------------------------------------
+
+function AutoPlay:AreComputersDone()
+	if self._computersLeft then
+		local Value =
+			tonumber(
+				self._computersLeft.Value
+			)
+
+		if Value ~= nil then
+			return Value <= 0
+		end
+	end
+
+	for _, Computer
+		in ipairs(
+			self:GetComputers()
+		)
+	do
+		if not self:IsComputerDone(
+			Computer
+		)
+		then
+			return false
+		end
+	end
+
+	return true
+end
+
+--------------------------------------------------
+-- EXIT
+--------------------------------------------------
+
+function AutoPlay:UseExit(
+	Exit,
+	Token
+)
+	if not Exit then
+		return false
+	end
+
+	self:_SetObjective(
+		"Exit Door"
+	)
+
+	local Trigger =
+		Exit:FindFirstChild(
+			"ExitDoorTrigger",
+			true
+		)
+
+	if Trigger
+		and Trigger:IsA(
+			"BasePart"
+		)
+	then
+		self:_SetStatus(
+			"Moving to exit"
+		)
+
+		local Arrived, Reason =
+			self:MoveTo(
+				Trigger.CFrame
+				+ self.Config.ExitOffset,
+				Token,
+				false
+			)
+
+		if not Arrived then
+			if Reason
+				== "Threat"
+			then
+				self:HideFromBeast(
+					Token
+				)
+			end
+
+			return false
+		end
+
+		self:_SetStatus(
+			"Opening exit"
+		)
+
+		self:StartInteraction(
+			Trigger
+		)
+
+		local Started =
+			os.clock()
+
+		while self.Config.Enabled
+			and Token
+				== self._runToken
+		do
+			if self:IsBeastClose() then
+				self:StopInteraction()
+
+				self:HideFromBeast(
+					Token
+				)
+
+				return false
+			end
+
+			local Progress =
+				self:GetActionProgress()
+
+			self:_SetProgress(
+				Progress
+			)
+
+			self:HandleSkillCheck()
+
+			local ActionSign =
+				Trigger:FindFirstChild(
+					"ActionSign"
+				)
+
+			if ActionSign
+				and ActionSign.Value
+					~= 12
+			then
+				break
+			end
+
+			if Progress >= 1 then
+				break
+			end
+
+			if os.clock()
+				- Started
+				> 15
+			then
+				break
+			end
+
+			task.wait(0.05)
+		end
+
+		self:StopInteraction()
+	end
+
+	--------------------------------------------------
+	-- EXIT AREA
+	--------------------------------------------------
+
+	local ExitArea =
+		Exit:FindFirstChild(
+			"ExitArea",
+			true
+		)
+
+	if not ExitArea then
+		ExitArea =
+			Exit:FindFirstChild(
+				"ExistArea",
+				true
+			)
+	end
+
+	if not ExitArea
+		or not ExitArea:IsA(
+			"BasePart"
+		)
+	then
+		self:_SetStatus(
+			"ExitArea not found"
+		)
+
+		return false
+	end
+
+	self:_SetStatus(
+		"Escaping"
+	)
+
+	--------------------------------------------------
+	-- MOVE INTO EXIT AREA
+	--------------------------------------------------
+
+	local Target =
+		ExitArea.CFrame
+		+ Vector3.new(
+			0,
+			1,
+			0
+		)
+
+	local Success =
+		self:MoveTo(
+			Target,
+			Token,
+			true
+		)
+
+	if Success then
+		-- Move slightly through the area so
+		-- normal Roblox touch detection sees it.
+
+		local Root =
+			self:GetRoot()
+
+		if Root then
+			Root.CFrame =
+				ExitArea.CFrame
+		end
+
+		task.wait(0.4)
+
+		self:_SetStatus(
+			"Escaped"
+		)
+
+		return true
+	end
+
+	return false
+end
+
+--------------------------------------------------
+-- MAIN LOOP
+--------------------------------------------------
+
+function AutoPlay:_Run(
+	Token
+)
+	self:_SetStatus(
+		"Starting"
+	)
+
+	self:_SetProgress(0)
+
+	while self.Config.Enabled
+		and Token
+			== self._runToken
+	do
+		--------------------------------------------------
+		-- DO NOT AUTOPLAY AS BEAST
+		--------------------------------------------------
+
+		if self:IsBeast(
+			LocalPlayer
+		)
+		then
+			self:_SetStatus(
+				"Local player is Beast"
+			)
+
+			task.wait(1)
+
+			continue
+		end
+
+		--------------------------------------------------
+		-- THREAT
+		--------------------------------------------------
+
+		if self:IsBeastClose() then
+			self:HideFromBeast(
+				Token
+			)
+
+			task.wait(0.1)
+
+			continue
+		end
+
+		--------------------------------------------------
+		-- COMPUTERS
+		--------------------------------------------------
+
+		if not self:AreComputersDone() then
+			local Computer =
+				self:GetNearestComputer()
+
+			if Computer then
+				self:HackComputer(
+					Computer,
+					Token
+				)
+			else
+				self:_SetStatus(
+					"Searching for computer"
+				)
+
+				task.wait(0.5)
+			end
+
+			continue
+		end
+
+		--------------------------------------------------
+		-- EXIT
+		--------------------------------------------------
+
+		local Exit =
+			self:GetNearestExit()
+
+		if not Exit then
+			self:_SetStatus(
+				"Searching for exit"
+			)
+
+			task.wait(0.5)
+
+			continue
+		end
+
+		local Escaped =
+			self:UseExit(
+				Exit,
+				Token
+			)
+
+		if Escaped then
+			self.Config.Enabled =
+				false
+
+			break
+		end
+
+		task.wait(0.25)
+	end
+
+	self:CancelTween()
+
+	self:StopInteraction()
+
+	self:_SetProgress(0)
+end
+
+--------------------------------------------------
+-- ENABLE
+--------------------------------------------------
+
+function AutoPlay:SetEnabled(
+	Enabled
+)
+	Enabled =
+		Enabled == true
+
+	if self.Config.Enabled
+		== Enabled
+	then
+		return
+	end
+
+	self.Config.Enabled =
+		Enabled
+
+	self._runToken += 1
+
+	local Token =
+		self._runToken
+
+	if not Enabled then
+		self:CancelTween()
+
+		self:StopInteraction()
+
+		self:_SetStatus(
+			"Disabled"
+		)
+
+		self:_SetObjective(
+			"None"
+		)
+
+		return
+	end
+
+	task.spawn(function()
+		self:_Run(
+			Token
+		)
+	end)
+end
+
+--------------------------------------------------
+-- INIT
+--------------------------------------------------
+
+function AutoPlay:Init()
+	if self._initialized then
+		return
+	end
+
+	self._initialized =
+		true
+
+	self._remote =
+		ReplicatedStorage:WaitForChild(
+			"RemoteEvent"
+		)
+
+	self._computersLeft =
+		ReplicatedStorage:FindFirstChild(
+			"ComputersLeft"
+		)
+
+	local StatsModule =
+		LocalPlayer:WaitForChild(
+			"TempPlayerStatsModule"
+		)
+
+	self._stats =
+		require(
+			StatsModule
+		)
+end
+
+--------------------------------------------------
+-- CREATE UI
+--------------------------------------------------
+
+function AutoPlay:CreateUI(
+	Section
+)
+	self._statusLabel =
+		Section:AddLabel({
+			Text =
+				"Status: Disabled",
+		})
+
+	self._objectiveLabel =
+		Section:AddLabel({
+			Text =
+				"Objective: None",
+		})
+
+	--------------------------------------------------
+	-- PROGRESS BAR
+	--------------------------------------------------
+
+	Section:AddCustom({
+		Height = 48,
+
+		Builder =
+			function(Container)
+				local Label =
+					Instance.new(
+						"TextLabel"
+					)
+
+				Label.Size =
+					UDim2.new(
+						1,
+						0,
+						0,
+						18
+					)
+
+				Label.BackgroundTransparency =
+					1
+
+				Label.Text =
+					"Hack Progress"
+
+				Label.TextColor3 =
+					Color3.fromRGB(
+						210,
+						210,
+						210
+					)
+
+				Label.TextSize =
+					11
+
+				Label.Font =
+					Enum.Font.Gotham
+
+				Label.TextXAlignment =
+					Enum.TextXAlignment.Left
+
+				Label.Parent =
+					Container
+
+				local Bar =
+					Instance.new(
+						"Frame"
+					)
+
+				Bar.Size =
+					UDim2.new(
+						1,
+						0,
+						0,
+						18
+					)
+
+				Bar.Position =
+					UDim2.new(
+						0,
+						0,
+						0,
+						24
+					)
+
+				Bar.BackgroundColor3 =
+					Color3.fromRGB(
+						38,
+						38,
+						38
+					)
+
+				Bar.BorderSizePixel =
+					0
+
+				Bar.Parent =
+					Container
+
+				local Corner =
+					Instance.new(
+						"UICorner"
+					)
+
+				Corner.CornerRadius =
+					UDim.new(
+						0,
+						5
+					)
+
+				Corner.Parent =
+					Bar
+
+				local Fill =
+					Instance.new(
+						"Frame"
+					)
+
+				Fill.Size =
+					UDim2.fromScale(
+						0,
+						1
+					)
+
+				Fill.BackgroundColor3 =
+					Color3.fromRGB(
+						90,
+						170,
+						110
+					)
+
+				Fill.BorderSizePixel =
+					0
+
+				Fill.Parent =
+					Bar
+
+				local FillCorner =
+					Instance.new(
+						"UICorner"
+					)
+
+				FillCorner.CornerRadius =
+					UDim.new(
+						0,
+						5
+					)
+
+				FillCorner.Parent =
+					Fill
+
+				local Percent =
+					Instance.new(
+						"TextLabel"
+					)
+
+				Percent.Size =
+					UDim2.fromScale(
+						1,
+						1
+					)
+
+				Percent.BackgroundTransparency =
+					1
+
+				Percent.Text =
+					"0%"
+
+				Percent.TextColor3 =
+					Color3.new(
+						1,
+						1,
+						1
+					)
+
+				Percent.TextSize =
+					11
+
+				Percent.Font =
+					Enum.Font.GothamBold
+
+				Percent.Parent =
+					Bar
+
+				self._progressFill =
+					Fill
+
+				self._progressLabel =
+					Percent
+			end,
+	})
+
+	--------------------------------------------------
+	-- AUTO PLAY
+	--------------------------------------------------
+
+	Section:AddToggle({
+		Name =
+			"Auto Play",
+
+		Default =
+			false,
+
+		Callback =
+			function(Value)
+				self:SetEnabled(
+					Value
+				)
+			end,
+	})
+
+	--------------------------------------------------
+	-- SPEED
+	--------------------------------------------------
+
+	Section:AddSlider({
+		Name =
+			"Tween Speed",
+
+		Min =
+			10,
+
+		Max =
+			80,
+
+		Default =
+			self.Config.MoveSpeed,
+
+		Increment =
+			1,
+
+		Callback =
+			function(Value)
+				self.Config.MoveSpeed =
+					Value
+			end,
+	})
+
+	--------------------------------------------------
+	-- BEAST RANGE
+	--------------------------------------------------
+
+	Section:AddSlider({
+		Name =
+			"Beast Avoid Distance",
+
+		Min =
+			20,
+
+		Max =
+			120,
+
+		Default =
+			self.Config.BeastAvoidDistance,
+
+		Increment =
+			5,
+
+		Callback =
+			function(Value)
+				self.Config.BeastAvoidDistance =
+					Value
+
+				if self.Config.BeastResumeDistance
+					<= Value
+				then
+					self.Config.BeastResumeDistance =
+						Value + 20
+				end
+			end,
+	})
+
+	--------------------------------------------------
+	-- HIDE DEPTH
+	--------------------------------------------------
+
+	Section:AddSlider({
+		Name =
+			"Hide Depth",
+
+		Min =
+			5,
+
+		Max =
+			40,
+
+		Default =
+			self.Config.HideDepth,
+
+		Increment =
+			1,
+
+		Callback =
+			function(Value)
+				self.Config.HideDepth =
+					Value
+			end,
+	})
+
+	--------------------------------------------------
+	-- SKILL CHECK
+	--------------------------------------------------
+
+	Section:AddToggle({
+		Name =
+			"Admin Skill Check",
+
+		Default =
+			self.Config.AutoSkillCheck,
+
+		Callback =
+			function(Value)
+				self.Config.AutoSkillCheck =
+					Value
+			end,
+	})
+end
+
+--------------------------------------------------
+-- STOP
+--------------------------------------------------
+
+function AutoPlay:Stop()
+	self.Config.Enabled =
+		false
+
+	self._runToken += 1
+
+	self:CancelTween()
+
+	self:StopInteraction()
+
+	self:_SetStatus(
+		"Stopped"
+	)
+
+	self:_SetObjective(
+		"None"
+	)
+end
+
+function AutoPlay:Destroy()
+	self:Stop()
+end
+
+return AutoPlay
