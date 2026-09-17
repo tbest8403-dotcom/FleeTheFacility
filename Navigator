@@ -1,19 +1,25 @@
-local Players =
-	game:GetService("Players")
+local Players = game:GetService("Players")
+local PathfindingService = game:GetService("PathfindingService")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
 
-local PathfindingService =
-	game:GetService("PathfindingService")
-
-local RunService =
-	game:GetService("RunService")
-
-local Workspace =
-	game:GetService("Workspace")
-
-local LocalPlayer =
-	Players.LocalPlayer
+local LocalPlayer = Players.LocalPlayer
 
 local Navigator = {}
+
+--------------------------------------------------
+-- VERSION
+--------------------------------------------------
+
+Navigator.Name = "Navigator"
+Navigator.Version = "v1.2.0"
+
+print(
+	("[FleeTheFacility] %s %s loaded"):format(
+		Navigator.Name,
+		Navigator.Version
+	)
+)
 
 --------------------------------------------------
 -- CONFIG
@@ -24,59 +30,98 @@ Navigator.Config = {
 	-- AGENT CALCULATION
 	--------------------------------------------------
 
-	RadiusPadding = 0.55,
+	RadiusPadding = 0.5,
+	HeightPadding = 0.3,
 
-	HeightPadding = 0.35,
-
-	MinAgentRadius = 1.25,
-
-	MaxAgentRadius = 3.5,
+	MinAgentRadius = 1.2,
+	MaxAgentRadius = 3.25,
 
 	MinAgentHeight = 4,
-
 	MaxAgentHeight = 9,
 
 	--------------------------------------------------
-	-- PATH
+	-- WAYPOINTS
 	--------------------------------------------------
 
-	MinWaypointSpacing = 3.5,
+	MinWaypointSpacing = 3.25,
+	MaxWaypointSpacing = 5.5,
 
-	MaxWaypointSpacing = 6,
+	WaypointReachDistance = 1.8,
+	FinalReachDistance = 1.75,
 
-	WaypointReachDistance = 2.25,
+	MaxFinalVerticalDifference = 3,
 
-	FinalReachDistance = 3,
+	WaypointTimeout = 7,
 
-	WaypointTimeout = 6,
-
-	MaxRepaths = 8,
+	MaxRepaths = 12,
 
 	--------------------------------------------------
 	-- JUMPING
 	--------------------------------------------------
 
-	ForceJumpHeightDifference = 1.35,
+	ForceJumpHeightDifference = 1.05,
 
-	JumpRetryDelay = 0.3,
+	JumpRetryDelay = 0.2,
 
-	MaxJumpRetries = 2,
-
-	--------------------------------------------------
-	-- TARGET GROUNDING
-	--------------------------------------------------
-
-	GroundProbeHeight = 12,
-
-	GroundProbeDepth = 80,
+	MaxJumpRetries = 5,
 
 	--------------------------------------------------
-	-- WALL CLEARANCE
+	-- STUCK DETECTION
 	--------------------------------------------------
 
-	CorridorHeight = 4,
+	StuckCheckInterval = 0.35,
 
-	CorridorExtraPadding = 0.2,
+	StuckMovementThreshold = 0.2,
+
+	StuckDistanceImprovement = 0.12,
+
+	MaxStuckJumps = 4,
+
+	--------------------------------------------------
+	-- OBSTACLE DETECTION
+	--------------------------------------------------
+
+	ObstacleProbeDistance = 3,
+
+	ObstacleLowHeight = 0.25,
+
+	ObstacleHighHeight = 3.2,
+
+	ObstacleJumpCooldown = 0.2,
+
+	--------------------------------------------------
+	-- LOCAL ESCAPE
+	--------------------------------------------------
+
+	EscapeRadius = 4,
+
+	EscapeDirections = 12,
+
+	EscapeMoveTimeout = 0.65,
+
+	EscapeMinimumMovement = 0.8,
+
+	EscapeGroundProbeHeight = 6,
+
+	EscapeGroundProbeDepth = 14,
+
+	MaxEscapeAttempts = 3,
+
+	--------------------------------------------------
+	-- TARGET
+	--------------------------------------------------
+
+	GroundProbeHeight = 10,
+
+	GroundProbeDepth = 70,
+
+	--------------------------------------------------
+	-- CORRIDOR
+	--------------------------------------------------
+
+	CorridorExtraPadding = 0.1,
+
+	CorridorHeightScale = 0.8,
 
 	--------------------------------------------------
 	-- SMOOTHING
@@ -84,7 +129,7 @@ Navigator.Config = {
 
 	SmoothWaypoints = true,
 
-	MaxSmoothLookAhead = 5,
+	MaxSmoothLookAhead = 4,
 }
 
 --------------------------------------------------
@@ -93,10 +138,9 @@ Navigator.Config = {
 
 Navigator._moveGeneration = 0
 
-Navigator._agentSettings = nil
+Navigator._character = nil
 
-Navigator._character =
-	nil
+Navigator._agentSettings = nil
 
 --------------------------------------------------
 -- CHARACTER
@@ -107,8 +151,7 @@ function Navigator:GetCharacter()
 end
 
 function Navigator:GetHumanoid()
-	local Character =
-		self:GetCharacter()
+	local Character = self:GetCharacter()
 
 	if not Character then
 		return nil
@@ -120,8 +163,7 @@ function Navigator:GetHumanoid()
 end
 
 function Navigator:GetRoot()
-	local Character =
-		self:GetCharacter()
+	local Character = self:GetCharacter()
 
 	if not Character then
 		return nil
@@ -133,117 +175,29 @@ function Navigator:GetRoot()
 end
 
 --------------------------------------------------
--- BODY PART CHECK
+-- PART CHECK
 --------------------------------------------------
 
 function Navigator:IsAccessoryPart(
 	Part
 )
-	local Parent =
-		Part.Parent
+	local Parent = Part.Parent
 
 	while Parent do
-		if Parent:IsA(
-			"Accessory"
-		)
-			or Parent:IsA(
-				"Tool"
-			)
+		if Parent:IsA("Accessory")
+			or Parent:IsA("Tool")
 		then
 			return true
 		end
 
-		Parent =
-			Parent.Parent
+		Parent = Parent.Parent
 	end
 
 	return false
 end
 
 --------------------------------------------------
--- BODY HEIGHT
---------------------------------------------------
-
-function Navigator:GetBodyHeight()
-	local Character =
-		self:GetCharacter()
-
-	local Root =
-		self:GetRoot()
-
-	if not Character
-		or not Root
-	then
-		return 5
-	end
-
-	local MinimumY =
-		math.huge
-
-	local MaximumY =
-		-math.huge
-
-	for _, Object
-		in ipairs(
-			Character:GetDescendants()
-		)
-	do
-		if Object:IsA(
-			"BasePart"
-		)
-			and not self:IsAccessoryPart(
-				Object
-			)
-		then
-			--------------------------------------------------
-			-- GET ALL PART CORNERS
-			--------------------------------------------------
-
-			local Half =
-				Object.Size / 2
-
-			for X = -1, 1, 2 do
-				for Y = -1, 1, 2 do
-					for Z = -1, 1, 2 do
-						local Corner =
-							Object.CFrame
-							* Vector3.new(
-								Half.X * X,
-								Half.Y * Y,
-								Half.Z * Z
-							)
-
-						MinimumY =
-							math.min(
-								MinimumY,
-								Corner.Y
-							)
-
-						MaximumY =
-							math.max(
-								MaximumY,
-								Corner.Y
-							)
-					end
-				end
-			end
-		end
-	end
-
-	if MinimumY
-			== math.huge
-		or MaximumY
-			== -math.huge
-	then
-		return 5
-	end
-
-	return MaximumY
-		- MinimumY
-end
-
---------------------------------------------------
--- CHARACTER WIDTH
+-- BODY WIDTH
 --------------------------------------------------
 
 function Navigator:GetBodyWidth()
@@ -259,31 +213,22 @@ function Navigator:GetBodyWidth()
 		return 2
 	end
 
-	--------------------------------------------------
-	-- DO NOT USE ARMS / ACCESSORIES.
-	--
-	-- PATHFINDING NEEDS THE CHARACTER COLLISION
-	-- FOOTPRINT, NOT ITS VISUAL EXTENTS.
-	--------------------------------------------------
-
-	local CandidateNames = {
-		"HumanoidRootPart",
-		"Torso",
-		"UpperTorso",
-		"LowerTorso",
-	}
-
 	local Width =
 		math.max(
 			Root.Size.X,
 			Root.Size.Z
 		)
 
-	for _, Name
-		in ipairs(
-			CandidateNames
-		)
-	do
+	local Candidates = {
+		"HumanoidRootPart",
+		"Torso",
+		"UpperTorso",
+		"LowerTorso",
+	}
+
+	for _, Name in ipairs(
+		Candidates
+	) do
 		local Part =
 			Character:FindFirstChild(
 				Name
@@ -307,7 +252,74 @@ function Navigator:GetBodyWidth()
 end
 
 --------------------------------------------------
--- JUMP CAPABILITY
+-- BODY HEIGHT
+--------------------------------------------------
+
+function Navigator:GetBodyHeight()
+	local Character =
+		self:GetCharacter()
+
+	if not Character then
+		return 5
+	end
+
+	local MinimumY =
+		math.huge
+
+	local MaximumY =
+		-math.huge
+
+	for _, Object in ipairs(
+		Character:GetDescendants()
+	) do
+		if Object:IsA("BasePart")
+			and not self:IsAccessoryPart(
+				Object
+			)
+		then
+			local Half =
+				Object.Size / 2
+
+			for X = -1, 1, 2 do
+				for Y = -1, 1, 2 do
+					for Z = -1, 1, 2 do
+						local Point =
+							Object.CFrame
+							* Vector3.new(
+								Half.X * X,
+								Half.Y * Y,
+								Half.Z * Z
+							)
+
+						MinimumY =
+							math.min(
+								MinimumY,
+								Point.Y
+							)
+
+						MaximumY =
+							math.max(
+								MaximumY,
+								Point.Y
+							)
+					end
+				end
+			end
+		end
+	end
+
+	if MinimumY == math.huge
+		or MaximumY == -math.huge
+	then
+		return 5
+	end
+
+	return MaximumY
+		- MinimumY
+end
+
+--------------------------------------------------
+-- CAN JUMP
 --------------------------------------------------
 
 function Navigator:CanCharacterJump()
@@ -319,12 +331,10 @@ function Navigator:CanCharacterJump()
 	end
 
 	if Humanoid.UseJumpPower then
-		return Humanoid.JumpPower
-			> 0
+		return Humanoid.JumpPower > 0
 	end
 
-	return Humanoid.JumpHeight
-		> 0
+	return Humanoid.JumpHeight > 0
 end
 
 --------------------------------------------------
@@ -338,44 +348,32 @@ function Navigator:CalculateAgent()
 	local Height =
 		self:GetBodyHeight()
 
-	--------------------------------------------------
-	-- RADIUS
-	--------------------------------------------------
-
 	local Radius =
-		Width / 2
-		+ self.Config.RadiusPadding
-
-	Radius =
 		math.clamp(
-			Radius,
+			Width / 2
+				+ self.Config.RadiusPadding,
+
 			self.Config.MinAgentRadius,
+
 			self.Config.MaxAgentRadius
 		)
 
-	--------------------------------------------------
-	-- HEIGHT
-	--------------------------------------------------
-
 	local AgentHeight =
-		Height
-		+ self.Config.HeightPadding
-
-	AgentHeight =
 		math.clamp(
-			AgentHeight,
+			Height
+				+ self.Config.HeightPadding,
+
 			self.Config.MinAgentHeight,
+
 			self.Config.MaxAgentHeight
 		)
 
-	--------------------------------------------------
-	-- WAYPOINT SPACING
-	--------------------------------------------------
-
 	local WaypointSpacing =
 		math.clamp(
-			Radius * 2.4,
+			Radius * 2.35,
+
 			self.Config.MinWaypointSpacing,
+
 			self.Config.MaxWaypointSpacing
 		)
 
@@ -399,6 +397,15 @@ function Navigator:CalculateAgent()
 			self:CanCharacterJump(),
 	}
 
+	print(
+		string.format(
+			"[FleeTheFacility] Navigator Agent Radius %.2f | Height %.2f | Spacing %.2f",
+			Radius,
+			AgentHeight,
+			WaypointSpacing
+		)
+	)
+
 	return self._agentSettings
 end
 
@@ -410,17 +417,14 @@ function Navigator:GetAgentSettings()
 	local Character =
 		self:GetCharacter()
 
-	if not Character then
-		return self:CalculateAgent()
-	end
-
-	if self._character
-		~= Character
+	if Character
+		~= self._character
 	then
 		self._character =
 			Character
 
-		return self:CalculateAgent()
+		self._agentSettings =
+			nil
 	end
 
 	if not self._agentSettings then
@@ -435,14 +439,14 @@ end
 --------------------------------------------------
 
 function Navigator:GetRootHeight()
-	local Humanoid =
-		self:GetHumanoid()
-
 	local Root =
 		self:GetRoot()
 
-	if not Humanoid
-		or not Root
+	local Humanoid =
+		self:GetHumanoid()
+
+	if not Root
+		or not Humanoid
 	then
 		return 3
 	end
@@ -452,7 +456,7 @@ function Navigator:GetRootHeight()
 end
 
 --------------------------------------------------
--- RAY PARAMS
+-- RAYCAST PARAMS
 --------------------------------------------------
 
 function Navigator:GetRaycastParams()
@@ -478,7 +482,7 @@ function Navigator:GetRaycastParams()
 end
 
 --------------------------------------------------
--- GROUND TARGET
+-- PROJECT TO GROUND
 --------------------------------------------------
 
 function Navigator:GetGroundTarget(
@@ -495,18 +499,19 @@ function Navigator:GetGroundTarget(
 			0
 		)
 
-	local Distance =
-		self.Config.GroundProbeHeight
-		+ self.Config.GroundProbeDepth
-
 	local Result =
 		Workspace:Raycast(
 			Origin,
+
 			Vector3.new(
 				0,
-				-Distance,
+				-(
+					self.Config.GroundProbeHeight
+					+ self.Config.GroundProbeDepth
+				),
 				0
 			),
+
 			Params
 		)
 
@@ -520,6 +525,54 @@ function Navigator:GetGroundTarget(
 			self:GetRootHeight(),
 			0
 		)
+end
+
+--------------------------------------------------
+-- NORMALIZE TARGET
+--------------------------------------------------
+
+function Navigator:GetTargetPosition(
+	Target,
+	Options
+)
+	local Position
+
+	if typeof(Target)
+		== "Vector3"
+	then
+		Position =
+			Target
+
+	elseif typeof(Target)
+		== "CFrame"
+	then
+		Position =
+			Target.Position
+
+	elseif typeof(Target)
+			== "Instance"
+		and Target:IsA(
+			"BasePart"
+		)
+	then
+		Position =
+			Target.Position
+
+	else
+		return nil
+	end
+
+	if not Options
+		or Options.ProjectToGround
+			~= false
+	then
+		Position =
+			self:GetGroundTarget(
+				Position
+			)
+	end
+
+	return Position
 end
 
 --------------------------------------------------
@@ -552,19 +605,18 @@ function Navigator:CreatePath(
 		})
 
 	local Success =
-		pcall(function()
-			Path:ComputeAsync(
-				StartPosition,
-				TargetPosition
-			)
-		end)
+		pcall(
+			function()
+				Path:ComputeAsync(
+					StartPosition,
+					TargetPosition
+				)
+			end
+		)
 
-	if not Success then
-		return nil
-	end
-
-	if Path.Status
-		~= Enum.PathStatus.Success
+	if not Success
+		or Path.Status
+			~= Enum.PathStatus.Success
 	then
 		return nil
 	end
@@ -573,7 +625,79 @@ function Navigator:CreatePath(
 end
 
 --------------------------------------------------
--- WALL CLEARANCE
+-- PATH DISTANCE
+--------------------------------------------------
+
+function Navigator:GetPathDistance(
+	Target,
+	Options
+)
+	local Root =
+		self:GetRoot()
+
+	if not Root then
+		return math.huge
+	end
+
+	Options =
+		Options or {}
+
+	local TargetPosition =
+		self:GetTargetPosition(
+			Target,
+			Options
+		)
+
+	if not TargetPosition then
+		return math.huge
+	end
+
+	local Path =
+		self:CreatePath(
+			Root.Position,
+			TargetPosition
+		)
+
+	if not Path then
+		return math.huge
+	end
+
+	local Waypoints =
+		Path:GetWaypoints()
+
+	if #Waypoints == 0 then
+		return math.huge
+	end
+
+	local Distance = 0
+
+	local Previous =
+		Root.Position
+
+	for _, Waypoint in ipairs(
+		Waypoints
+	) do
+		Distance +=
+			(
+				Waypoint.Position
+				- Previous
+			).Magnitude
+
+		Previous =
+			Waypoint.Position
+	end
+
+	Distance +=
+		(
+			TargetPosition
+			- Previous
+		).Magnitude
+
+	return Distance
+end
+
+--------------------------------------------------
+-- CORRIDOR CHECK
 --------------------------------------------------
 
 function Navigator:HasClearCorridor(
@@ -584,10 +708,7 @@ function Navigator:HasClearCorridor(
 		EndPosition
 		- StartPosition
 
-	local Distance =
-		Difference.Magnitude
-
-	if Distance <= 0.1 then
+	if Difference.Magnitude <= 0.05 then
 		return true
 	end
 
@@ -598,45 +719,24 @@ function Navigator:HasClearCorridor(
 		Agent.AgentRadius
 		+ self.Config.CorridorExtraPadding
 
-	--------------------------------------------------
-	-- CHECK AT ROOT HEIGHT, NOT FLOOR LEVEL
-	--------------------------------------------------
-
-	local RootHeight =
-		self:GetRootHeight()
+	local Height =
+		Agent.AgentHeight
+		* self.Config.CorridorHeightScale
 
 	local Start =
-		Vector3.new(
-			StartPosition.X,
-			StartPosition.Y
-				+ RootHeight * 0.25,
-			StartPosition.Z
+		StartPosition
+		+ Vector3.new(
+			0,
+			Height / 2,
+			0
 		)
 
 	local Finish =
-		Vector3.new(
-			EndPosition.X,
-			EndPosition.Y
-				+ RootHeight * 0.25,
-			EndPosition.Z
-		)
-
-	local Direction =
-		Finish - Start
-
-	--------------------------------------------------
-	-- BOXCAST GIVES MUCH BETTER WALL CLEARANCE
-	-- THAN A SINGLE RAY.
-	--------------------------------------------------
-
-	local BoxSize =
-		Vector3.new(
-			Radius * 2,
-			math.min(
-				self.Config.CorridorHeight,
-				Agent.AgentHeight
-			),
-			Radius * 2
+		EndPosition
+		+ Vector3.new(
+			0,
+			Height / 2,
+			0
 		)
 
 	local Params =
@@ -644,11 +744,16 @@ function Navigator:HasClearCorridor(
 
 	local Result =
 		Workspace:Blockcast(
-			CFrame.new(
-				Start
+			CFrame.new(Start),
+
+			Vector3.new(
+				Radius * 2,
+				Height,
+				Radius * 2
 			),
-			BoxSize,
-			Direction,
+
+			Finish - Start,
+
 			Params
 		)
 
@@ -656,57 +761,53 @@ function Navigator:HasClearCorridor(
 end
 
 --------------------------------------------------
--- SMOOTH WAYPOINTS
+-- SMOOTH PATH
 --------------------------------------------------
 
 function Navigator:SmoothWaypoints(
 	Waypoints
 )
-	if not self.Config.SmoothWaypoints then
+	if not self.Config.SmoothWaypoints
+		or #Waypoints <= 2
+	then
 		return Waypoints
 	end
 
-	if #Waypoints <= 2 then
-		return Waypoints
-	end
-
-	local Result = {}
+	local Results = {}
 
 	local Index = 1
 
 	table.insert(
-		Result,
+		Results,
 		Waypoints[Index]
 	)
 
 	while Index < #Waypoints do
 		local BestIndex =
-			math.min(
-				Index + 1,
-				#Waypoints
-			)
+			Index + 1
 
-		local MaxCandidate =
+		local Maximum =
 			math.min(
 				Index
 					+ self.Config.MaxSmoothLookAhead,
+
 				#Waypoints
 			)
 
-		for CandidateIndex =
-			MaxCandidate,
+		for Candidate =
+			Maximum,
 			Index + 1,
 			-1
 		do
 			local ContainsJump =
 				false
 
-			for CheckIndex =
+			for Check =
 				Index + 1,
-				CandidateIndex
+				Candidate
 			do
 				if Waypoints[
-					CheckIndex
+					Check
 				].Action
 					== Enum.PathWaypointAction.Jump
 				then
@@ -720,13 +821,14 @@ function Navigator:SmoothWaypoints(
 			if not ContainsJump
 				and self:HasClearCorridor(
 					Waypoints[Index].Position,
+
 					Waypoints[
-						CandidateIndex
+						Candidate
 					].Position
 				)
 			then
 				BestIndex =
-					CandidateIndex
+					Candidate
 
 				break
 			end
@@ -736,12 +838,12 @@ function Navigator:SmoothWaypoints(
 			BestIndex
 
 		table.insert(
-			Result,
+			Results,
 			Waypoints[Index]
 		)
 	end
 
-	return Result
+	return Results
 end
 
 --------------------------------------------------
@@ -797,7 +899,7 @@ function Navigator:CheckAbort(
 end
 
 --------------------------------------------------
--- FORCE JUMP
+-- JUMP
 --------------------------------------------------
 
 function Navigator:ForceJump()
@@ -805,7 +907,13 @@ function Navigator:ForceJump()
 		self:GetHumanoid()
 
 	if not Humanoid then
-		return
+		return false
+	end
+
+	if Humanoid.FloorMaterial
+		== Enum.Material.Air
+	then
+		return false
 	end
 
 	Humanoid.Jump =
@@ -814,14 +922,319 @@ function Navigator:ForceJump()
 	Humanoid:ChangeState(
 		Enum.HumanoidStateType.Jumping
 	)
+
+	return true
 end
 
 --------------------------------------------------
--- SHOULD JUMP TO NEXT WAYPOINT
+-- JUMPABLE OBSTACLE
+--------------------------------------------------
+
+function Navigator:HasJumpableObstacle(
+	TargetPosition
+)
+	local Root =
+		self:GetRoot()
+
+	if not Root then
+		return false
+	end
+
+	local Difference =
+		TargetPosition
+		- Root.Position
+
+	local Flat =
+		Vector3.new(
+			Difference.X,
+			0,
+			Difference.Z
+		)
+
+	if Flat.Magnitude <= 0.1 then
+		return false
+	end
+
+	local Direction =
+		Flat.Unit
+		* self.Config.ObstacleProbeDistance
+
+	local Params =
+		self:GetRaycastParams()
+
+	local Low =
+		Workspace:Raycast(
+			Root.Position
+				+ Vector3.new(
+					0,
+					self.Config.ObstacleLowHeight,
+					0
+				),
+
+			Direction,
+
+			Params
+		)
+
+	if not Low then
+		return false
+	end
+
+	local High =
+		Workspace:Raycast(
+			Root.Position
+				+ Vector3.new(
+					0,
+					self.Config.ObstacleHighHeight,
+					0
+				),
+
+			Direction,
+
+			Params
+		)
+
+	return High == nil
+end
+
+--------------------------------------------------
+-- ESCAPE POINT
+--------------------------------------------------
+
+function Navigator:GetEscapePoint(
+	TargetPosition,
+	SeedOffset
+)
+	local Root =
+		self:GetRoot()
+
+	if not Root then
+		return nil
+	end
+
+	local Params =
+		self:GetRaycastParams()
+
+	local BestPoint =
+		nil
+
+	local BestScore =
+		math.huge
+
+	for Index = 1,
+		self.Config.EscapeDirections
+	do
+		local Angle =
+			(
+				(Index - 1)
+				/ self.Config.EscapeDirections
+			)
+			* math.pi
+			* 2
+
+		Angle +=
+			SeedOffset or 0
+
+		local Direction =
+			Vector3.new(
+				math.cos(Angle),
+				0,
+				math.sin(Angle)
+			)
+
+		local Probe =
+			Root.Position
+			+ Direction
+				* self.Config.EscapeRadius
+
+		local Ground =
+			Workspace:Raycast(
+				Probe
+					+ Vector3.new(
+						0,
+						self.Config.EscapeGroundProbeHeight,
+						0
+					),
+
+				Vector3.new(
+					0,
+					-self.Config.EscapeGroundProbeDepth,
+					0
+				),
+
+				Params
+			)
+
+		if Ground then
+			local Point =
+				Ground.Position
+				+ Vector3.new(
+					0,
+					self:GetRootHeight(),
+					0
+				)
+
+			local HeadClear =
+				Workspace:Raycast(
+					Ground.Position
+						+ Vector3.new(
+							0,
+							0.5,
+							0
+						),
+
+					Vector3.new(
+						0,
+						self:GetAgentSettings()
+							.AgentHeight,
+						0
+					),
+
+					Params
+				)
+
+			if not HeadClear then
+				local Score =
+					(
+						Point
+						- TargetPosition
+					).Magnitude
+
+				if Score < BestScore then
+					BestScore =
+						Score
+
+					BestPoint =
+						Point
+				end
+			end
+		end
+	end
+
+	return BestPoint
+end
+
+--------------------------------------------------
+-- LOCAL ESCAPE
+--------------------------------------------------
+
+function Navigator:TryLocalEscape(
+	TargetPosition,
+	Generation,
+	Options
+)
+	local Humanoid =
+		self:GetHumanoid()
+
+	local Root =
+		self:GetRoot()
+
+	if not Humanoid
+		or not Root
+	then
+		return false,
+			"NoCharacter"
+	end
+
+	local StartingPosition =
+		Root.Position
+
+	for Attempt = 1,
+		self.Config.MaxEscapeAttempts
+	do
+		local Abort =
+			self:CheckAbort(
+				Generation,
+				Options
+			)
+
+		if Abort then
+			return false,
+				Abort
+		end
+
+		--------------------------------------------------
+		-- JUMP FIRST
+		--------------------------------------------------
+
+		self:ForceJump()
+
+		task.wait(
+			0.04
+		)
+
+		--------------------------------------------------
+		-- FIND AN OPEN LOCAL DIRECTION
+		--------------------------------------------------
+
+		local Point =
+			self:GetEscapePoint(
+				TargetPosition,
+
+				Attempt
+					* 0.47
+			)
+
+		if Point then
+			Humanoid:MoveTo(
+				Point
+			)
+		else
+			Humanoid:MoveTo(
+				TargetPosition
+			)
+		end
+
+		local Started =
+			os.clock()
+
+		while os.clock()
+			- Started
+			< self.Config.EscapeMoveTimeout
+		do
+			local AbortReason =
+				self:CheckAbort(
+					Generation,
+					Options
+				)
+
+			if AbortReason then
+				return false,
+					AbortReason
+			end
+
+			Root =
+				self:GetRoot()
+
+			if not Root then
+				return false,
+					"NoCharacter"
+			end
+
+			if (
+				Root.Position
+				- StartingPosition
+			).Magnitude
+				>= self.Config.EscapeMinimumMovement
+			then
+				return true,
+					"Recovered"
+			end
+
+			RunService.Heartbeat:Wait()
+		end
+	end
+
+	return false,
+		"StillStuck"
+end
+
+--------------------------------------------------
+-- SHOULD JUMP
 --------------------------------------------------
 
 function Navigator:ShouldJump(
-	CurrentPosition,
+	RootPosition,
 	Waypoint
 )
 	if Waypoint.Action
@@ -830,17 +1243,9 @@ function Navigator:ShouldJump(
 		return true
 	end
 
-	local HeightDifference =
-		Waypoint.Position.Y
-		- CurrentPosition.Y
-
-	if HeightDifference
+	return Waypoint.Position.Y
+			- RootPosition.Y
 		>= self.Config.ForceJumpHeightDifference
-	then
-		return true
-	end
-
-	return false
 end
 
 --------------------------------------------------
@@ -866,9 +1271,10 @@ function Navigator:FollowWaypoint(
 			"NoCharacter"
 	end
 
-	--------------------------------------------------
-	-- JUMP BEFORE MOVEMENT IF NECESSARY
-	--------------------------------------------------
+	local ReachDistance =
+		IsFinal
+			and self.Config.FinalReachDistance
+			or self.Config.WaypointReachDistance
 
 	local NeedsJump =
 		self:ShouldJump(
@@ -884,10 +1290,6 @@ function Navigator:FollowWaypoint(
 		)
 	end
 
-	--------------------------------------------------
-	-- MOVE AT EXISTING WALKSPEED
-	--------------------------------------------------
-
 	Humanoid:MoveTo(
 		Waypoint.Position
 	)
@@ -895,16 +1297,26 @@ function Navigator:FollowWaypoint(
 	local Started =
 		os.clock()
 
+	local LastProgress =
+		os.clock()
+
+	local PreviousPosition =
+		Root.Position
+
+	local PreviousDistance =
+		(
+			Waypoint.Position
+			- Root.Position
+		).Magnitude
+
+	local LastJump =
+		0
+
 	local JumpRetries =
 		0
 
-	local LastJump =
-		os.clock()
-
-	local ReachDistance =
-		IsFinal
-			and self.Config.FinalReachDistance
-			or self.Config.WaypointReachDistance
+	local StuckJumps =
+		0
 
 	while true do
 		local Abort =
@@ -954,14 +1366,49 @@ function Navigator:FollowWaypoint(
 		if HorizontalDistance
 				<= ReachDistance
 			and VerticalDistance
-				<= 4
+				<= self.Config.MaxFinalVerticalDifference
 		then
 			return true,
 				"Reached"
 		end
 
+		local CurrentDistance =
+			Difference.Magnitude
+
+		local Movement =
+			(
+				Root.Position
+				- PreviousPosition
+			).Magnitude
+
+		local Improvement =
+			PreviousDistance
+			- CurrentDistance
+
 		--------------------------------------------------
-		-- JUMP RETRY
+		-- MADE PROGRESS
+		--------------------------------------------------
+
+		if Movement
+				>= self.Config.StuckMovementThreshold
+			or Improvement
+				>= self.Config.StuckDistanceImprovement
+		then
+			LastProgress =
+				os.clock()
+
+			PreviousPosition =
+				Root.Position
+
+			PreviousDistance =
+				CurrentDistance
+
+			StuckJumps =
+				0
+		end
+
+		--------------------------------------------------
+		-- PATH JUMP
 		--------------------------------------------------
 
 		if NeedsJump
@@ -979,11 +1426,14 @@ function Navigator:FollowWaypoint(
 				os.clock()
 
 			self:ForceJump()
+
+			Humanoid:MoveTo(
+				Waypoint.Position
+			)
 		end
 
 		--------------------------------------------------
-		-- IF WE ARE STUCK BELOW THE WAYPOINT,
-		-- TRY JUMPING EVEN IF PATH DIDN'T MARK IT.
+		-- WAYPOINT ABOVE US
 		--------------------------------------------------
 
 		if Difference.Y
@@ -998,6 +1448,78 @@ function Navigator:FollowWaypoint(
 				os.clock()
 
 			self:ForceJump()
+
+			Humanoid:MoveTo(
+				Waypoint.Position
+			)
+		end
+
+		--------------------------------------------------
+		-- LOW OBJECT IN FRONT
+		--------------------------------------------------
+
+		if Humanoid.FloorMaterial
+				~= Enum.Material.Air
+			and os.clock()
+				- LastJump
+				>= self.Config.ObstacleJumpCooldown
+			and self:HasJumpableObstacle(
+				Waypoint.Position
+			)
+		then
+			LastJump =
+				os.clock()
+
+			self:ForceJump()
+
+			Humanoid:MoveTo(
+				Waypoint.Position
+			)
+		end
+
+		--------------------------------------------------
+		-- STUCK
+		--------------------------------------------------
+
+		if os.clock()
+				- LastProgress
+				>= self.Config.StuckCheckInterval
+		then
+			StuckJumps += 1
+
+			--------------------------------------------------
+			-- JUMP BEFORE GIVING UP
+			--------------------------------------------------
+
+			if Humanoid.FloorMaterial
+				~= Enum.Material.Air
+			then
+				self:ForceJump()
+
+				Humanoid:MoveTo(
+					Waypoint.Position
+				)
+			end
+
+			LastProgress =
+				os.clock()
+
+			PreviousPosition =
+				Root.Position
+
+			PreviousDistance =
+				CurrentDistance
+
+			--------------------------------------------------
+			-- WE ARE ACTUALLY TRAPPED
+			--------------------------------------------------
+
+			if StuckJumps
+				>= self.Config.MaxStuckJumps
+			then
+				return false,
+					"Stuck"
+			end
 		end
 
 		--------------------------------------------------
@@ -1009,7 +1531,7 @@ function Navigator:FollowWaypoint(
 			>= self.Config.WaypointTimeout
 		then
 			return false,
-				"Blocked"
+				"Stuck"
 		end
 
 		RunService.Heartbeat:Wait()
@@ -1030,7 +1552,7 @@ function Navigator:FollowPath(
 
 	if #Waypoints == 0 then
 		return false,
-			"Blocked"
+			"Repath"
 	end
 
 	Waypoints =
@@ -1038,33 +1560,33 @@ function Navigator:FollowPath(
 			Waypoints
 		)
 
-	local CurrentIndex = 1
+	local CurrentWaypoint = 1
 
-	local PathBlocked =
+	local Blocked =
 		false
 
-	local BlockedConnection =
+	local Connection =
 		Path.Blocked:Connect(
-			function(BlockedIndex)
-				if BlockedIndex
-					>= CurrentIndex
+			function(
+				BlockedWaypoint
+			)
+				if BlockedWaypoint
+					>= CurrentWaypoint
 				then
-					PathBlocked =
+					Blocked =
 						true
 				end
 			end
 		)
 
-	for Index, Waypoint
-		in ipairs(
-			Waypoints
-		)
-	do
-		CurrentIndex =
+	for Index, Waypoint in ipairs(
+		Waypoints
+	) do
+		CurrentWaypoint =
 			Index
 
-		if PathBlocked then
-			BlockedConnection:Disconnect()
+		if Blocked then
+			Connection:Disconnect()
 
 			return false,
 				"Repath"
@@ -1074,27 +1596,31 @@ function Navigator:FollowPath(
 			Reason =
 			self:FollowWaypoint(
 				Waypoint,
+
 				Generation,
+
 				Options,
-				Index == #Waypoints
+
+				Index
+					== #Waypoints
 			)
 
 		if not Reached then
-			BlockedConnection:Disconnect()
+			Connection:Disconnect()
 
 			return false,
 				Reason
 		end
 	end
 
-	BlockedConnection:Disconnect()
+	Connection:Disconnect()
 
 	return true,
 		"Reached"
 end
 
 --------------------------------------------------
--- MOVE
+-- MOVE TO
 --------------------------------------------------
 
 function Navigator:MoveTo(
@@ -1104,82 +1630,36 @@ function Navigator:MoveTo(
 	Options =
 		Options or {}
 
-	local Root =
-		self:GetRoot()
-
 	local Humanoid =
 		self:GetHumanoid()
 
-	if not Root
-		or not Humanoid
+	local Root =
+		self:GetRoot()
+
+	if not Humanoid
+		or not Root
 	then
 		return false,
 			"NoCharacter"
 	end
 
-	--------------------------------------------------
-	-- AUTO RECALCULATE CHARACTER AGENT
-	--------------------------------------------------
+	local TargetPosition =
+		self:GetTargetPosition(
+			Target,
+			Options
+		)
+
+	if not TargetPosition then
+		return false,
+			"InvalidTarget"
+	end
 
 	self:GetAgentSettings()
-
-	--------------------------------------------------
-	-- DO NOT CHANGE:
-	--
-	-- Humanoid.WalkSpeed
-	-- Humanoid.JumpPower
-	-- Humanoid.JumpHeight
-	--------------------------------------------------
 
 	self:Cancel()
 
 	local Generation =
 		self._moveGeneration
-
-	local TargetPosition
-
-	if typeof(Target)
-		== "Vector3"
-	then
-		TargetPosition =
-			Target
-
-	elseif typeof(Target)
-		== "CFrame"
-	then
-		TargetPosition =
-			Target.Position
-
-	elseif typeof(Target)
-			== "Instance"
-		and Target:IsA(
-			"BasePart"
-		)
-	then
-		TargetPosition =
-			Target.Position
-
-	else
-		return false,
-			"InvalidTarget"
-	end
-
-	--------------------------------------------------
-	-- PROJECT TARGET TO FLOOR
-	--------------------------------------------------
-
-	if Options.ProjectToGround
-		~= false
-	then
-		TargetPosition =
-			self:GetGroundTarget(
-				TargetPosition
-			)
-	end
-
-	--------------------------------------------------
-	-- PATH / REPATH LOOP
-	--------------------------------------------------
 
 	for Attempt = 1,
 		self.Config.MaxRepaths
@@ -1203,18 +1683,33 @@ function Navigator:MoveTo(
 				"NoCharacter"
 		end
 
-		if (
-			Root.Position
-			- TargetPosition
-		).Magnitude
-			<= self.Config.FinalReachDistance
+		local Difference =
+			TargetPosition
+			- Root.Position
+
+		local Horizontal =
+			Vector3.new(
+				Difference.X,
+				0,
+				Difference.Z
+			).Magnitude
+
+		local Vertical =
+			math.abs(
+				Difference.Y
+			)
+
+		if Horizontal
+				<= self.Config.FinalReachDistance
+			and Vertical
+				<= self.Config.MaxFinalVerticalDifference
 		then
 			return true,
 				"Reached"
 		end
 
 		--------------------------------------------------
-		-- FRESH PATH
+		-- COMPUTE FRESH PATH
 		--------------------------------------------------
 
 		local Path =
@@ -1223,34 +1718,52 @@ function Navigator:MoveTo(
 				TargetPosition
 			)
 
-		if not Path then
-			task.wait(
-				0.08
-			)
+		if Path then
+			local Reached,
+				Reason =
+				self:FollowPath(
+					Path,
+					Generation,
+					Options
+				)
 
-			continue
+			if Reached then
+				return true,
+					"Reached"
+			end
+
+			if Reason
+				~= "Stuck"
+				and Reason
+					~= "Blocked"
+				and Reason
+					~= "Repath"
+			then
+				return false,
+					Reason
+			end
 		end
 
-		local Reached,
-			Reason =
-			self:FollowPath(
-				Path,
+		--------------------------------------------------
+		-- PATH FAILED OR WE GOT STUCK
+		--
+		-- JUMP / MOVE OUT OF LOCAL CLUTTER
+		--------------------------------------------------
+
+		local Escaped,
+			EscapeReason =
+			self:TryLocalEscape(
+				TargetPosition,
 				Generation,
 				Options
 			)
 
-		if Reached then
-			return true,
-				"Reached"
-		end
-
-		if Reason
-			~= "Blocked"
-			and Reason
-				~= "Repath"
+		if not Escaped
+			and EscapeReason
+				~= "StillStuck"
 		then
 			return false,
-				Reason
+				EscapeReason
 		end
 
 		task.wait(
@@ -1263,13 +1776,18 @@ function Navigator:MoveTo(
 end
 
 --------------------------------------------------
--- REFRESH WHEN CHARACTER RESPAWNS
+-- CHARACTER RESET
 --------------------------------------------------
 
 LocalPlayer.CharacterAdded:Connect(
-	function(Character)
+	function(
+		Character
+	)
 		Navigator._character =
 			Character
+
+		Navigator._agentSettings =
+			nil
 
 		task.wait(
 			0.5
@@ -1280,13 +1798,24 @@ LocalPlayer.CharacterAdded:Connect(
 )
 
 --------------------------------------------------
--- INITIAL CALCULATION
+-- DESTROY
 --------------------------------------------------
 
-if LocalPlayer.Character then
-	task.defer(function()
-		Navigator:CalculateAgent()
-	end)
+function Navigator:Destroy()
+	self:Cancel()
+
+	self._agentSettings =
+		nil
+
+	self._character =
+		nil
+
+	print(
+		("[FleeTheFacility] %s %s destroyed"):format(
+			self.Name,
+			self.Version
+		)
+	)
 end
 
 return Navigator
